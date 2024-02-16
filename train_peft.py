@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-# coding=utf-8
 # Copyright 2020 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,13 +27,15 @@ import warnings
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
-
+import numpy as np
 import datasets
-#import evaluate
+import evaluate
 import torch
 from datasets import load_dataset
-
+from typing import Optional, List, Dict, Any, Mapping
+from pathlib import Path
 import transformers
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_CAUSAL_LM_MAPPING,
@@ -53,6 +53,98 @@ from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
+
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel, get_peft_model_state_dict
+
+class TrainerNoBaseSave(Trainer):
+    def __init__(self, *args, **kwargs):
+        return super().__init__(*args, **kwargs)
+
+    def _save_checkpoint(self, model, trial, metrics=None):
+        print("Running custom _save_checkpoint")
+        checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+        run_dir = self._get_output_dir(trial=trial)
+        output_dir = os.path.join(run_dir, checkpoint_folder)
+
+        if metrics is not None and self.args.metric_for_best_model is not None:
+            metric_to_check = self.args.metric_for_best_model
+            if not metric_to_check.startswith("eval_"):
+                metric_to_check = f"eval_{metric_to_check}"
+            metric_value = metrics[metric_to_check]
+            operator = np.greater if self.args.greater_is_better else np.less
+            if (
+                self.state.best_metric is None
+                or self.state.best_model_checkpoint is None
+                or operator(metric_value, self.state.best_metric)
+            ):
+                self.state.best_metric = metric_value
+                self.state.best_model_checkpoint = output_dir
+
+        os.makedirs(output_dir, exist_ok=True)
+        if self.args.should_save:
+            self._rotate_checkpoints(use_mtime=True, output_dir=run_dir)
+
+class SavePeftModelCallback(transformers.TrainerCallback):
+    def save_model(self, args, state, kwargs):
+        if state.best_model_checkpoint is not None:
+            checkpoint_folder = os.path.join(state.best_model_checkpoint, "pt_lora_model")
+        else:
+            checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
+
+        peft_model_path = os.path.join(checkpoint_folder, "pt_lora_model")
+        kwargs["model"].save_pretrained(peft_model_path)
+        kwargs["tokenizer"].save_pretrained(peft_model_path)
+
+    def on_save(self, args, state, control, **kwargs):
+        self.save_model(args, state, kwargs)
+        return control
+
+    def on_train_end(self, args, state, control, **kwargs):
+        peft_model_path = os.path.join(args.output_dir, "pt_lora_model")
+        kwargs["model"].save_pretrained(peft_model_path)
+        kwargs["tokenizer"].save_pretrained(peft_model_path)
+
+def fault_tolerance_data_collator(features: List) -> Dict[str, Any]:
+    if not isinstance(features[0], Mapping):
+        features = [vars(f) for f in features]
+    first = features[0]
+    batch = {}
+
+    # Special handling for labels.
+    # Ensure that tensor is created with the correct type
+    # (it should be automatically the case, but let's make sure of it.)
+    if "label" in first and first["label"] is not None:
+        label = first["label"].item() if isinstance(first["label"], torch.Tensor) else first["label"]
+        dtype = torch.long if isinstance(label, int) else torch.float
+        batch["labels"] = torch.tensor([f["label"] for f in features], dtype=dtype)
+    elif "label_ids" in first and first["label_ids"] is not None:
+        if isinstance(first["label_ids"], torch.Tensor):
+            batch["labels"] = torch.stack([f["label_ids"] for f in features])
+        else:
+            dtype = torch.long if isinstance(first["label_ids"][0], int) else torch.float
+            batch["labels"] = torch.tensor([f["label_ids"] for f in features], dtype=dtype)
+
+    # Handling of all other possible keys.
+    # Again, we will use the first element to figure out which key/values are not None for this model.
+
+    try:
+        for k, v in first.items():
+            if k not in ("label", "label_ids") and v is not None and not isinstance(v, str):
+                if isinstance(v, torch.Tensor):
+                    batch[k] = torch.stack([f[k] for f in features])
+                elif isinstance(v, np.ndarray):
+                    batch[k] = torch.tensor(np.stack([f[k] for f in features]))
+                else:
+                    batch[k] = torch.tensor([f[k] for f in features])
+    except ValueError: # quick fix by simply take the first example
+        for k, v in first.items():
+            if k not in ("label", "label_ids") and v is not None and not isinstance(v, str):
+                if isinstance(v, torch.Tensor):
+                    batch[k] = torch.stack([features[0][k]] * len(features))
+                elif isinstance(v, np.ndarray):
+                    batch[k] = torch.tensor(np.stack([features[0][k]] * len(features)))
+                else:
+                    batch[k] = torch.tensor([features[0][k]] * len(features))
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -242,13 +334,23 @@ class DataTrainingArguments:
                 extension = self.validation_file.split(".")[-1]
                 assert extension in ["csv", "json", "txt"], "`validation_file` should be a csv, a json or a txt file."
 
+@dataclass
+class LoraTrainingArguments(TrainingArguments):
+    trainable : Optional[str] = field(default="q_proj,v_proj")
+    lora_rank : Optional[int] = field(default=8)
+    lora_dropout : Optional[float] = field(default=0.1)
+    lora_alpha : Optional[float] = field(default=32.)
+    modules_to_save : Optional[str] = field(default=None)
+    debug_mode : Optional[bool] = field(default=False)
+    peft_path : Optional[str] = field(default=None)
+
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, LoraTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
@@ -429,41 +531,6 @@ def main():
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
-    if model_args.model_name_or_path:
-        torch_dtype = (
-            model_args.torch_dtype
-            if model_args.torch_dtype in ["auto", None]
-            else getattr(torch, model_args.torch_dtype)
-        )
-        print(torch_dtype)
-        torch_dtype = 'auto'
-        torch_dtype = torch.float16
-        model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            token=model_args.token,
-            trust_remote_code=model_args.trust_remote_code,
-            torch_dtype=torch_dtype,
-            #low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-            use_flash_attention_2=True,
-            device_map='auto'
-        )
-    else:
-        model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
-        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
-
-    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
-    # on a small vocab and want a smaller embedding size, remove this test.
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
-
-    # Preprocessing the datasets.
-    # First we tokenize all the texts.
     if training_args.do_train:
         column_names = list(raw_datasets["train"].features)
     else:
@@ -473,12 +540,22 @@ def main():
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
+    def merge(tensors):
+        keys = tensors[0].keys()
+        return {key: [l for l in chain(*[t[key] for t in tensors])] for key in keys}
+
+    def shrink_first_fake_space(tensors):
+        return {key: tensors[key][1:] for key in tensors}
+
     def tokenize_function(examples):
-        #eos = '<|endoftext|> ' if tokenizer.eos_token == '<|endoftext|>' else ''
         with CaptureLogger(tok_logger) as cl:
-            #output = tokenizer([t + eos for t in examples[text_column_name]])
-             output = tokenizer(examples[text_column_name])
-        # clm input could be much much longer than block_size
+            # because tokenizer cant handle long documents
+            # check it on every specific tokenizer, may be bugs!
+            paragraphs = (tokenizer.bos_token + examples[text_column_name].strip()).split('\n')
+            tensors_first = tokenizer(paragraphs[0], add_special_tokens=False)
+            tensors_rest = [shrink_first_fake_space(tokenizer('\n' + par, add_special_tokens=False)) for par in paragraphs[1:]]
+
+            output = merge([tensors_first] + tensors_rest)
         if "Token indices sequence length is longer than the" in cl.out:
             tok_logger.warning(
                 "^^^^^^^^^^^^^^^^ Please ignore the warning above - this long input will be chunked into smaller bits"
@@ -490,7 +567,7 @@ def main():
         if not data_args.streaming:
             tokenized_datasets = raw_datasets.map(
                 tokenize_function,
-                batched=True,
+                batched=False,
                 num_proc=data_args.preprocessing_num_workers,
                 remove_columns=column_names,
                 load_from_cache_file=not data_args.overwrite_cache,
@@ -499,7 +576,7 @@ def main():
         else:
             tokenized_datasets = raw_datasets.map(
                 tokenize_function,
-                batched=True,
+                batched=False,
                 remove_columns=column_names,
             )
 
@@ -521,6 +598,7 @@ def main():
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
     # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
+    '''
     def group_texts(examples):
         # Concatenate all texts.
         concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
@@ -533,6 +611,45 @@ def main():
             k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
             for k, t in concatenated_examples.items()
         }
+        result["labels"] = result["input_ids"].copy()
+        return result
+    '''
+    def group_texts(examples):
+        # Concatenate all texts.
+        concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
+        total_length = len(concatenated_examples[list(examples.keys())[0]])
+
+        estimated_blocks = total_length // block_size
+
+        start_idx = 0
+        end_idx = start_idx + block_size
+        segments = []
+        bos_token_id = tokenizer.bos_token_id 
+        para_sep_token_id = tokenizer('\n', add_special_tokens=False)['input_ids'][1]
+        segment_start_tokens = [bos_token_id, para_sep_token_id]
+        while end_idx < total_length:
+            while start_idx < total_length and concatenated_examples['input_ids'][start_idx] not in segment_start_tokens:
+                start_idx += 1
+
+            if start_idx == total_length:
+                break
+
+            if concatenated_examples['input_ids'][start_idx] == para_sep_token_id:
+                #concatenated_examples['input_ids'][start_idx] = bos_token_id
+                start_idx += 1
+
+            end_idx = start_idx + block_size
+            if end_idx < total_length:
+                segments.append([start_idx, end_idx])
+
+            start_idx = end_idx
+
+
+        result = {k: [] for k in concatenated_examples}
+        for segment in segments:
+            for k in result:
+                result[k].append(concatenated_examples[k][segment[0]: segment[1]])
+
         result["labels"] = result["input_ids"].copy()
         return result
 
@@ -549,7 +666,7 @@ def main():
                 group_texts,
                 batched=True,
                 num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
+                load_from_cache_file=False,#not data_args.overwrite_cache,
                 desc=f"Grouping texts in chunks of {block_size}",
             )
         else:
@@ -557,6 +674,86 @@ def main():
                 group_texts,
                 batched=True,
             )
+            
+    if model_args.model_name_or_path:
+        torch_dtype = (
+            model_args.torch_dtype
+            if model_args.torch_dtype in ["auto", None]
+            else getattr(torch, model_args.torch_dtype)
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            #device_map={"": f"cuda:{training_args.local_rank}"}
+        )
+    else:
+        model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
+        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+        logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+
+    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
+    # on a small vocab and want a smaller embedding size, remove this test.
+    embedding_size = model.get_input_embeddings().weight.shape[0]
+    if len(tokenizer) > embedding_size:
+        model.resize_token_embeddings(len(tokenizer))
+
+#    for name, param in model.named_parameters():
+#        param.requires_grad = False
+
+
+    
+
+    if training_args.peft_path is not None:
+        logger.info("Peft from pre-trained model")
+        model = PeftModel.from_pretrained(model, training_args.peft_path)
+    else:
+        logger.info("Init new peft model")
+        target_modules = training_args.trainable.split(',')
+        modules_to_save = training_args.modules_to_save
+        if modules_to_save is not None:
+            modules_to_save = modules_to_save.split(',')
+        lora_rank = training_args.lora_rank
+        lora_dropout = training_args.lora_dropout
+        lora_alpha = training_args.lora_alpha
+        logger.info(f"target_modules: {target_modules}")
+        logger.info(f"lora_rank: {lora_rank}")
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            target_modules=target_modules,
+            inference_mode=False,
+            r=lora_rank, lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            modules_to_save=modules_to_save)
+        model = get_peft_model(model, peft_config)
+
+ #       for key, _ in model.named_modules():
+ #           target_module_found = any([key.endswith(target_key) for target_key in modules_to_save])
+ #           if target_module_found:
+ #               model.get_submodule(key+'.original_module').requires_grad_(False)
+
+    model.print_trainable_parameters()
+
+    '''
+    old_state_dict = model.state_dict
+    model.state_dict = (
+        lambda self, *_, **__: get_peft_model_state_dict(self, old_state_dict())
+    ).__get__(model, type(model))
+    '''
+    #for name, param in model.named_parameters():
+    #    if param.device == torch.device('cpu'):
+    #        print(name)
+    #        print(param)
+
+    # Preprocessing the datasets.
+    # First we tokenize all the texts.
+    
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
@@ -589,16 +786,17 @@ def main():
             # by preprocess_logits_for_metrics but we need to shift the labels
             labels = labels[:, 1:].reshape(-1)
             preds = preds[:, :-1].reshape(-1)
-            #return 0.0
             return metric.compute(predictions=preds, references=labels)
 
     # Initialize our Trainer
 
-    for param_name, param in model.model.named_parameters():
-        if 'embed_tokens' not in param_name:
-            param.requires_grad = False
+    #for param_name, param in model.model.named_parameters():
+    #    if 'embed_tokens' not in param_name:
+    #        param.requires_grad = False
+    #for name, param in model.named_parameters():
+    #    param.requires_grad = False
 
-    trainer = Trainer(
+    trainer = TrainerNoBaseSave(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
@@ -612,6 +810,13 @@ def main():
         else None,
     )
 
+    class EvaluateFirstStepCallback(transformers.TrainerCallback):
+        def on_step_begin(self, args, state, control, **kwargs):
+            if state.global_step == 0:
+                control.should_evaluate = True
+
+    trainer.add_callback(EvaluateFirstStepCallback())
+    trainer.add_callback(SavePeftModelCallback)
     # Training
     if training_args.do_train:
         checkpoint = None

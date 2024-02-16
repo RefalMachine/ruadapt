@@ -4,7 +4,7 @@ import torch
 import argparse
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer 
 import torch
-from src.tokenization.utils import reinit_embeddings_with_head_llama, special_encode
+from src.tokenization.utils import reinit_embeddings_with_head_llama, special_encode, get_mean_vec
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -15,8 +15,7 @@ if __name__ == '__main__':
 
     tokenizer_old = AutoTokenizer.from_pretrained(args.model_name_or_path)
     tokenizer_new = AutoTokenizer.from_pretrained(args.new_tokenizer_path)
-    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, torch_dtype=torch.float16)
-    model.eval()
+    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, device_map='auto', torch_dtype=torch.float16)
 
     embeddings_old = model.model.embed_tokens.weight.data.clone()
     lm_head_old = model.lm_head.weight.data.clone()
@@ -28,7 +27,7 @@ if __name__ == '__main__':
     model.generation_config.eos_token_id = tokenizer_new.eos_token_id
     model.generation_config.pad_token_id = tokenizer_new.pad_token_id
 
-    reinit_embeddings_with_head_llama(model, tokenizer_old, tokenizer_new, 'mean', 'tie')
+    reinit_embeddings_with_head_llama(model, tokenizer_old, tokenizer_new, mode='mean', lm_head_init='tie')
     
     word = '▁Пушкин'
     new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
@@ -45,6 +44,9 @@ if __name__ == '__main__':
     print(lm_head_old[old_ids])
     print(lm_head_old[old_ids].mean(axis=0))
     print(model.lm_head.weight[[new_id]])
+
+    print(model.model.embed_tokens.weight)
+    print(model.lm_head.weight)
 
     model.save_pretrained(args.output_path)
     tokenizer_new.save_pretrained(args.output_path)

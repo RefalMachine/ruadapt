@@ -23,8 +23,9 @@ def reinit_embeddings_with_head_llama(model, tokenizer_old, tokenizer_new, mode=
     embeddings_old = model.model.embed_tokens.weight.data.clone()
     lm_head_old = model.lm_head.weight.data.clone()
     
-    model.model.embed_tokens = nn.Embedding(model.config.vocab_size, model.config.hidden_size)
-    model.lm_head = nn.Linear(model.config.hidden_size, model.config.vocab_size, bias=False)
+    model.model.embed_tokens = nn.Embedding(model.config.vocab_size, model.config.hidden_size, dtype=embeddings_old.dtype)
+    model.lm_head = nn.Linear(model.config.hidden_size, model.config.vocab_size, bias=False, dtype=embeddings_old.dtype)
+
     if mode == 'random':
         model.model.embed_tokens.weight.data.normal_(mean=0.0, std=model.config.initializer_range)
         model.lm_head.weight.data.normal_(mean=0.0, std=model.config.initializer_range)
@@ -42,22 +43,29 @@ def reinit_embeddings_with_head_llama(model, tokenizer_old, tokenizer_new, mode=
         if 'pad_token' in tokenizer_new.special_tokens_map:
             spec_tokens.add(tokenizer_new.special_tokens_map['pad_token'])
 
-        for i in tqdm(range(vocab_size)):
-            token = tokenizer_new._tokenizer.id_to_token(i)
-            if token in spec_tokens:
-                continue
-            
-            vec = get_mean_vec(token, tokenizer_old, embeddings_old)
-            model.model.embed_tokens.weight.data[i] = vec
+        with torch.no_grad():
+            for i in tqdm(range(vocab_size)):
+                token = tokenizer_new._tokenizer.id_to_token(i)
+                if token in spec_tokens:
+                    continue
+                
+                    vec = get_mean_vec(token, tokenizer_old, embeddings_old)
+                    model.model.embed_tokens.weight.data[i].copy_(vec)
 
-            if lm_head_init == 'hm': # lm head mean
-                vec = get_mean_vec(token, tokenizer_old, lm_head_old)
-                model.lm_head.weight.data[i] = vec
-            
-        if lm_head_init == 'tie':
-            model._tie_or_clone_weights(model.get_output_embeddings(), model.get_input_embeddings())
+                    if lm_head_init == 'hm': # lm head mean
+                        vec = get_mean_vec(token, tokenizer_old, lm_head_old)
+                        model.lm_head.weight.data[i].copy_(vec)
+                    elif lm_head_init == 'tie':
+                        model.lm_head.weight.data[i].copy_(vec)
+                    
+                #if lm_head_init == 'tie':
+                #    model._tie_or_clone_weights(model.get_output_embeddings(), model.get_input_embeddings())
     else:
         raise Exception('NotImplemented')
+
+    print(model.model.embed_tokens.weight.data[0])
+    print(model.lm_head.weight.data[0])
+    #return model
     
 def reinit_embeddings_with_head_llama_w2v(model, tokenizer_old, tokenizer_new, w2v_model):
     assert model.lm_head.bias is None
