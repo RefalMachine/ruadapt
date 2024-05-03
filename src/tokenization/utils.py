@@ -2,6 +2,9 @@ from torch import nn
 from tqdm import tqdm
 import torch
 
+def convert_ascii_hex(token):
+    return int(token[-2], 16) + 16 * int(token[-3], 16)
+
 def special_encode(token_str, tokenizer):
     shift = len(tokenizer.encode('家', add_special_tokens=False))
     tokens = tokenizer.encode('家' + token_str, add_special_tokens=False)
@@ -49,10 +52,15 @@ def reinit_embeddings_with_head_llama3(model, tokenizer_old, tokenizer_new, mode
         with torch.no_grad():
             for i in tqdm(range(vocab_size)):
                 token = tokenizer_new._tokenizer.id_to_token(i)
+                #if i >= 3 and i <= 258:
+                #    token = chr(convert_ascii_hex(token))
                 if token in spec_tokens:
                     vec = embeddings_old[tokenizer_old._tokenizer.token_to_id(token)]
                 else:
-                    token = token.replace('▁', ' ')
+                    if i >= 3 and i <= 258:
+                        token = chr(convert_ascii_hex(token))
+                    else:
+                        token = token.replace('▁', ' ')
                     vec = get_mean_vec(token, tokenizer_old, embeddings_old)
                 model.model.embed_tokens.weight.data[i].copy_(vec)
 
