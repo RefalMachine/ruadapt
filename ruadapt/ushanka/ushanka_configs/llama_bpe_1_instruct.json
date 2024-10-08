@@ -1,0 +1,5 @@
+{
+    "target_model_path" : "../models/instruct_models/Meta-Llama-3-8B-Instruct/",
+    "source_model_path" : "../models/base_models/Meta-Llama-3-8B/",
+    "donor_model_path" : "../models/ruadapt/llama3_darulm_20_05_24_part1-2_128000_bpe_part1_lr1e4_bs256"
+}

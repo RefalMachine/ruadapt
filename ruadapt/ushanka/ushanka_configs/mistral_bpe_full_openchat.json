@@ -1,0 +1,5 @@
+{
+    "target_model_path" : "../models/instruct_models/openchat-3.5-0106/",
+    "source_model_path" : "../models/base_models/Mistral-7B-v0.1/",
+    "donor_model_path" : "../models/ruadapt/mistral_darulm_20_05_24_part1-2_32000_bpe_full_lr1e4_bs256"
+}
