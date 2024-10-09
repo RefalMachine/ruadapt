@@ -75,6 +75,12 @@ def ushanka_embedding_projection(target_model, source_model, donor_model,
     if module_projection_modes is None:
         module_projection_modes = {}
     # Fill missing entries with DEFAULT_PROJECTION_MODE
+    
+    assert target_model.config.tie_word_embeddings == source_model.config.tie_word_embeddings == donor_model.config.tie_word_embeddings
+    if target_model.config.tie_word_embeddings:
+        EMB_MODULES = ["model.embed_tokens"]
+        print('Models have tie embeddings. LEP only input embeddings')
+        
     for mod in EMB_MODULES:
         module_projection_modes[mod] = module_projection_modes.get(
             mod, DEFAULT_PROJECTION_MODE
@@ -114,6 +120,10 @@ def ushanka_embedding_projection(target_model, source_model, donor_model,
             print("Copying service tokens...")
             init_added_toks(new_mod, mod, new_tokenizer, model_tokenizer)
             mod.weight = new_mod.weight
+
+        if target_model.config.tie_word_embeddings:
+            target_model.lm_head = target_model.model.embed_tokens
+
 
 
 def make_ushanka(target_model, source_model, donor_model,

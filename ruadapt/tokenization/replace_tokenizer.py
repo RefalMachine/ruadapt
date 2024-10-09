@@ -1,4 +1,4 @@
-from utils import get_tokenizer_properties, convert_token_to_string_universal, convert_token_universal
+from .utils import get_tokenizer_properties, convert_token_to_string_universal, convert_token_universal
 from torch import nn
 from tqdm import tqdm
 import torch

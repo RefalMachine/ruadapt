@@ -199,14 +199,14 @@ def main():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("input_path", type=str, help="Path for input tiktoken file")
+    parser.add_argument("--input_path", type=str, help="Path for input tiktoken file")
     parser.add_argument(
-        "output_path",
+        "--output_path",
         type=str,
         help="Path for output tiktoken file, containing only the new merges",
     )
     parser.add_argument(
-        "vocab_path",
+        "--vocab_path",
         type=str,
         help="Path for words needed adding, each line is a word and its frequency separated by \\t",
     )

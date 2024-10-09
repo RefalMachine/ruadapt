@@ -2,6 +2,7 @@ import json
 from transformers import AutoTokenizer
 from tokenizers import Tokenizer
 import argparse
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--src_tokenizer_path')

@@ -4,8 +4,8 @@ import torch
 import argparse
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, AutoConfig
 import torch
-from replace_tokenizer import reinit_embeddings_with_head_universal
-from utils import special_encode
+from .replace_tokenizer import reinit_embeddings_with_head_universal
+from .utils import special_encode
 import codecs
 import json
 import os
@@ -27,16 +27,7 @@ if __name__ == '__main__':
     lm_head_old = model.lm_head.weight.data.clone()
 
     reinit_logs = reinit_embeddings_with_head_universal(model, tokenizer_old, tokenizer_new, mode='mean', lm_head_init='hm')
-    '''
-    if args.type == 'mistral':
-        reinit_embeddings_with_head_mistral(model, tokenizer_old, tokenizer_new, mode='mean', lm_head_init='hm')
-    elif args.type == 'llama3':
-        reinit_embeddings_with_head_llama3(model, tokenizer_old, tokenizer_new, mode='mean', lm_head_init='hm')
-    elif args.type == 'llama3_ext':
-        reinit_embeddings_with_head_llama3_extended(model, tokenizer_old, tokenizer_new, mode='mean', lm_head_init='hm')
-    else:
-        raise Exception('args.type')
-    '''
+
     model.config.bos_token_id = tokenizer_new.bos_token_id
     model.config.eos_token_id = tokenizer_new.eos_token_id
     model.config.pad_token_id = tokenizer_new.pad_token_id

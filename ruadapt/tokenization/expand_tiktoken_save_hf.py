@@ -3,7 +3,7 @@ import tiktoken
 from transformers import AutoTokenizer
 import os
 import json
-from convert_tiktoken import generate_vocab_and_merges
+from .convert_tiktoken import generate_vocab_and_merges
 from argparse import ArgumentParser
 
 # Based on Qwen
