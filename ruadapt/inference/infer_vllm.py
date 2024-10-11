@@ -24,7 +24,8 @@ def infer_vllm(
     repetition_penalty: float = 1.1,
     remove_bos_token: bool = False,
     quantization: Optional[str] = None,
-    infer_for: str = 'default'
+    infer_for: str = 'default',
+    max_samples: int = -1
 ):
     sampling_params = SamplingParams(
         temperature=temperature,
@@ -47,6 +48,8 @@ def infer_vllm(
     }
     encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
     prompts = []
+    if max_samples > 0:
+        records = records[:max_samples]
     for r in records:
         if "instruction" in r:
             messages = [{"role": "user", "content": r["instruction"]}]
@@ -65,22 +68,21 @@ def infer_vllm(
             messages = messages[:-1]
 
         prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages, tokenize=True, add_generation_prompt=True
         )
-        if remove_bos_token:
-            prompt = prompt.replace(tokenizer.bos_token, "")
+        #if remove_bos_token:
+        #    prompt = prompt.replace(tokenizer.bos_token, "")
 
         prompts.append(prompt)
 
     print(prompts[0])
     print(sampling_params)
-    outputs = llm.generate(prompts, sampling_params)
+    outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params)
     full_results = []
     with open(output_path, "w") as w:
         for record, output in zip(records, outputs):
-            
-            prompt = output.prompt
             prompt_token_ids = output.prompt_token_ids
+            prompt = tokenizer.decode(output.prompt_token_ids)
             assert prompt_token_ids[0] != prompt_token_ids[1], prompt_token_ids
             generated_text = output.outputs[0].text
 

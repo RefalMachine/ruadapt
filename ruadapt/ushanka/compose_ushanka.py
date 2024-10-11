@@ -4,10 +4,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, Genera
 import argparse
 import time
 import json
+import codecs
 from pathlib import Path
 
-from src.ushanka import make_ushanka
-from src.ushanka_proj_utils import list_projection_modes
+from .src.ushanka import make_ushanka
+from .src.ushanka_proj_utils import list_projection_modes
 
 def load_model(model_path):
     config = AutoConfig.from_pretrained(model_path)
@@ -28,15 +29,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_path", type=str)
     parser.add_argument("--mode", type=str, default="conversion")
-    parser.add_argument("--out_path", type=str, default="./composed_models")
+    parser.add_argument("--output_path", type=str, default="./composed_models")
+    parser.add_argument("--custom_chat_template_path", type=str, default=None)
     args = parser.parse_args()
     
-    out_dir = Path(args.out_path)
+    out_dir = Path(args.output_path)
     out_dir.mkdir(exist_ok=True)
     
     config_path = Path(args.config_path)
-    out_name = f"{config_path.stem}_{args.mode}"
-    print(f"Output will placed at: {out_dir / out_name}")
+    print(f"Output will placed at: {out_dir}")
+    #print(f"Output will placed at: {out_dir / out_name}")
     
     with open(config_path) as f:
         config_dict = json.load(f)
@@ -67,5 +69,9 @@ if __name__ == "__main__":
     model.generation_config.eos_token_id = tokenizer.eos_token_id
     model.generation_config.bos_token_id = tokenizer.bos_token_id
     
-    model.save_pretrained(out_dir / out_name)
-    tokenizer.save_pretrained(out_dir / out_name)
+    model.save_pretrained(out_dir)
+    if args.custom_chat_template_path is not None:
+        with codecs.open(args.custom_chat_template_path, 'r', 'utf-8') as file:
+            tokenizer.chat_template = json.load(file)
+
+    tokenizer.save_pretrained(out_dir)

@@ -1,0 +1,5 @@
+{
+    "target_model_path" : "Qwen/Qwen2.5-3B-Instruct",
+    "source_model_path" : "Qwen/Qwen2.5-3B",
+    "donor_model_path" : "RefalMachine/ruadapt_qwen2.5_3B_ext_cl100k_bpe_32000_full_lr3e4_bs256"
+}

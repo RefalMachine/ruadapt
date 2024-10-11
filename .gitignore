@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 test_group.json
+outputs/
+*.jsonl
