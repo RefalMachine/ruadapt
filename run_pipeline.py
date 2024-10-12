@@ -91,7 +91,7 @@ def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
         data[i]['generator'] = os.path.basename(output_dir) + '_' + os.path.basename(model_path)
     
     with codecs.open(output_path, 'w', 'utf-8') as file:
-        json.dump(data, file)
+        json.dump(data, file, ensure_ascii=False, indent=4)
 
     return 0
 
@@ -190,7 +190,7 @@ if __name__ == '__main__':
         else:
             engine = 'unsloth' if step['unsloth'] else 'transformers'
         script_name = f'ruadapt.instruct_tuning.train_{engine}'
-        
+
         if run_step(script_name, step_config_path, step['train_file_path'], step['val_file_path'], step_model_path, args.sample_rate):
             print(f'ERROR while step {i}. Stoping pipeline.')
             exit(1)

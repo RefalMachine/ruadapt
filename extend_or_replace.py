@@ -8,7 +8,6 @@ if __name__ == '__main__':
     parser.add_argument('--op')
     parser.add_argument('--src_model_path')
     parser.add_argument('--output_path')
-
     parser.add_argument('--replace_tokenizer_path', default='')
     parser.add_argument('--extend_tiktoken_tokenizer_path', default='')
     parser.add_argument('--extend_hf_tokenizer_path', default='')
