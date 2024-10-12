@@ -8,7 +8,7 @@ from transformers import DataCollatorForTokenClassification, Trainer, AutoTokeni
 from unsloth import FastLanguageModel, UnslothTrainingArguments
 from unsloth.trainer import _create_unsloth_optimizer
 
-from .utils import ChatDataset
+from .dataset import ChatDataset
 from .utils import read_jsonl
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"

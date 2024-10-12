@@ -9,18 +9,18 @@ from transformers import AutoTokenizer
 def resolve_special_tokens(model_path, bos_token, eos_token, pad_token):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if bos_token is None:
-        bos_token = tokenizer.config.bos_token
+        #bos_token = tokenizer.config.bos_token
+        #if bos_token is None:
+        bos_token = tokenizer.bos_token
         if bos_token is None:
-            bos_token = bos_token.bos_token
-            if bos_token is None:
-                bos_token = tokenizer.special_tokens_map.get('bos_token', None)
+            bos_token = tokenizer.special_tokens_map.get('bos_token', None)
 
     if eos_token is None:
-        eos_token = tokenizer.config.eos_token
+        #eos_token = tokenizer.config.eos_token
+        #if eos_token is None:
+        eos_token = tokenizer.eos_token
         if eos_token is None:
-            eos_token = tokenizer.eos_token
-            if eos_token is None:
-                eos_token = tokenizer.special_tokens_map.get('eos_token', None)
+            eos_token = tokenizer.special_tokens_map.get('eos_token', None)
 
     assert bos_token is not None or eos_token is not None
     if bos_token is None:
@@ -31,7 +31,7 @@ def resolve_special_tokens(model_path, bos_token, eos_token, pad_token):
     if pad_token is None:
         pad_token = bos_token
 
-    print('ATTENTION:\n\tbos_token={bos_token}\n\teos_token={eos_token}\n\tpad_token={pad_token}\nIf it is incorrect, then use custom_tokens parameters')
+    print(f'ATTENTION:\n\tbos_token={bos_token}\n\teos_token={eos_token}\n\tpad_token={pad_token}\nIf it is incorrect, then use custom_tokens parameters')
     return {'bos_token': bos_token, 'eos_token': eos_token, 'pad_token': pad_token}
 
 def create_lep_config(target_model_path, source_model_path, donor_model_path, output_dir):
@@ -96,11 +96,11 @@ def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
     return 0
 
 def run_merge_model(lora_model_path):
-    assert lora_model_path[-5:] == 'lora'
+    assert lora_model_path[-4:] == 'lora'
     print(f'Merging {lora_model_path} to {lora_model_path[:-5]}')
     return subprocess.call(
         [
-            'python', '-m', 'scripts.merge_lora', 
+            'python', 'scripts/merge_lora.py', 
             lora_model_path,
             lora_model_path[:-5]
         ]
@@ -144,47 +144,53 @@ if __name__ == '__main__':
     parser.add_argument('--custom_eos_token', default=None)
     parser.add_argument('--custom_pad_token', default=None)
     parser.add_argument('--sample_rate', type=float, default=1.0)
+    parser.add_argument('--skip_lep', action='store_true')
     args = parser.parse_args()
 
     if not os.path.exists(args.output_dir):
         print(f'Creating dir {args.output_dir}')
         os.makedirs(args.output_dir)
 
-    lep_model_path, lep_config_path = create_lep_config(
-        args.instruct_model_name_or_path, 
-        args.raw_base_model_name_or_path, 
-        args.ruadapt_base_model_name_or_path, 
-        args.output_dir
-    )
-    
-    '''
-    if run_lep(lep_model_path, lep_config_path, args.custom_chat_template_path):
-        print('ERROR while LEP. Stoping pipeline.')
-        exit(1)
-    '''
-    if run_infer_model(lep_model_path, args.output_dir, args.alpaca_eval_questions_path):
-        print('ERROR while infer LEP model. Stoping pipeline.')
-        exit(1)
+    if args.skip_lep:
+        print(f'WARNING: if tou skip lep step, then ruadapt_base_model_name_or_path ({args.ruadapt_base_model_name_or_path}) will be used as input instruct model for other steps!')
+        prev_step_model_path = args.ruadapt_base_model_name_or_path
+
+    if not args.skip_lep:
+        lep_model_path, lep_config_path = create_lep_config(
+            args.instruct_model_name_or_path, 
+            args.raw_base_model_name_or_path, 
+            args.ruadapt_base_model_name_or_path, 
+            args.output_dir
+        )
+
+        if run_lep(lep_model_path, lep_config_path, args.custom_chat_template_path):
+            print('ERROR while LEP. Stoping pipeline.')
+            exit(1)
+        
+        if run_infer_model(lep_model_path, args.output_dir, args.alpaca_eval_questions_path):
+            print('ERROR while infer LEP model. Stoping pipeline.')
+            exit(1)
+        prev_step_model_path = lep_model_path
 
     with codecs.open(args.pipeline_config_path, 'r', 'utf-8') as file:
         pipeline = json.load(file)
 
     special_tokens = resolve_special_tokens(
-        lep_model_path, 
+        prev_step_model_path, 
         args.custom_bos_token, 
         args.custom_eos_token, 
         args.custom_pad_token
     )
-    prev_step_model_path = lep_model_path
+    
     for i, step in enumerate(pipeline):
         assert step['type'] in ['ft', 'sft', 'kto']
         step_model_path, step_config_path = create_step_config(i, step, prev_step_model_path, args.output_dir, special_tokens)
-        if step == 'kto':
+        if step['type'] == 'kto':
             engine = 'kto'
         else:
             engine = 'unsloth' if step['unsloth'] else 'transformers'
         script_name = f'ruadapt.instruct_tuning.train_{engine}'
-
+        
         if run_step(script_name, step_config_path, step['train_file_path'], step['val_file_path'], step_model_path, args.sample_rate):
             print(f'ERROR while step {i}. Stoping pipeline.')
             exit(1)

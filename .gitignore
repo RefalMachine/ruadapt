@@ -3,3 +3,4 @@ __pycache__/
 test_group.json
 outputs/
 *.jsonl
+wandb/

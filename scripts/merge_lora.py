@@ -29,7 +29,7 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto"):
     print(lora_model.lm_head.weight[0])
     print(base_model.config.tie_word_embeddings)
     print(config.modules_to_save)
-    if base_model.config.tie_word_embeddings and 'lm_head' in config.modules_to_save:
+    if base_model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
         lora_model.model.embed_tokens.weight = lora_model.lm_head.weight
 
     print(lora_model.model.embed_tokens.weight[0])

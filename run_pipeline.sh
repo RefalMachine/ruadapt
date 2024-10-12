@@ -1,10 +1,12 @@
-
 python run_pipeline.py \
---ruadapt_base_model_name_or_path RefalMachine/ruadapt_qwen2.5_3B_ext_cl100k_unigram_32000_full_lr3e4_bs256 \
+--ruadapt_base_model_name_or_path /workdir/data/models/qwen/pipeline_test/lep \
 --raw_base_model_name_or_path Qwen/Qwen2.5-3B \
 --instruct_model_name_or_path Qwen/Qwen2.5-3B-Instruct \
 --custom_chat_template_path ruadapt/ushanka/custom_chat_templates/qwen_2.5_instruct_no_system.json \
 --output_dir /workdir/data/models/qwen/pipeline_test \
 --alpaca_eval_questions_path ../saiga/llmarena_questions.json \
 --pipeline_config_path pipeline_configs/qwen_pipeline_config_test.json \
+--custom_bos_token "<|endoftext|>" \
+--custom_pad_token "<|endoftext|>" \
+--skip_lep \
 --sample_rate 0.05
