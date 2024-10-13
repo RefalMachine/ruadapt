@@ -1,0 +1,3 @@
+[submodule "ruadapt/evaluation/llmtf_open"]
+	path = ruadapt/evaluation/llmtf_open
+	url = https://github.com/RefalMachine/llmtf_open
