@@ -160,21 +160,15 @@ def eval_instruct_model_zero_shot(model_name_or_path, output_dir=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ruadapt_base_model_name_or_path')
-    parser.add_argument('--raw_base_model_name_or_path')
-    parser.add_argument('--instruct_model_name_or_path')
-    parser.add_argument('--custom_chat_template_path')
-    parser.add_argument('--output_dir')
-    parser.add_argument('--alpaca_eval_questions_path')
-    parser.add_argument('--pipeline_config_path')
-    parser.add_argument('--custom_bos_token', default=None)
-    parser.add_argument('--custom_eos_token', default=None)
-    parser.add_argument('--custom_pad_token', default=None)
-    parser.add_argument('--sample_rate', type=float, default=1.0)
-    parser.add_argument('--skip_lep', action='store_true')
-    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--config_path')
     args = parser.parse_args()
 
+    with codecs.open(args.config_path, 'r', 'utf-8') as file:
+        params = json.load(file)
+        for key in params:
+            args.__setattr__(key, params[key])
+    print(args)
+    
     if not os.path.exists(args.output_dir):
         print(f'Creating dir {args.output_dir}')
         os.makedirs(args.output_dir)
