@@ -34,7 +34,7 @@ def resolve_special_tokens(model_path, bos_token, eos_token, pad_token):
     print(f'ATTENTION:\n\tbos_token={bos_token}\n\teos_token={eos_token}\n\tpad_token={pad_token}\nIf it is incorrect, then use custom_tokens parameters')
     return {'bos_token': bos_token, 'eos_token': eos_token, 'pad_token': pad_token}
 
-def create_lep_config(target_model_path, source_model_path, donor_model_path, output_dir):
+def create_lep_config(target_model_path, source_model_path, donor_model_path, output_dir, alpha_scale=1.0, not_scale_lm_head=False):
     lep_model_path = os.path.join(output_dir, 'lep')
     if not os.path.exists(lep_model_path):
         os.mkdir(lep_model_path)
@@ -42,7 +42,9 @@ def create_lep_config(target_model_path, source_model_path, donor_model_path, ou
     lep_config = {
         "target_model_path" : target_model_path,
         "source_model_path" : source_model_path,
-        "donor_model_path" : donor_model_path
+        "donor_model_path" : donor_model_path,
+        "alpha_scale": alpha_scale,
+        "not_scale_lm_head": not_scale_lm_head
     }
 
     lep_config_path = os.path.join(lep_model_path, 'lep_config.json')
@@ -179,16 +181,18 @@ if __name__ == '__main__':
     else:
         prev_step_model_path = args.instruct_model_name_or_path
 
-    if args.eval:
-        if eval_instruct_model_zero_shot(prev_step_model_path, os.path.join(args.output_dir, 'init_llmtf_eval')):
-            print(f'ERROR: failed to eval {prev_step_model_path}, but continue')
+    #if args.eval:
+    #    if eval_instruct_model_zero_shot(prev_step_model_path, os.path.join(args.output_dir, 'init_llmtf_eval')):
+    #        print(f'ERROR: failed to eval {prev_step_model_path}, but continue')
 
     if not args.skip_lep:
         lep_model_path, lep_config_path = create_lep_config(
             args.instruct_model_name_or_path, 
             args.raw_base_model_name_or_path, 
             args.ruadapt_base_model_name_or_path, 
-            args.output_dir
+            args.output_dir#,
+            #args.alpha_scale,
+            #args.not_scale_lm_head
         )
 
         if run_lep(lep_model_path, lep_config_path, args.custom_chat_template_path):

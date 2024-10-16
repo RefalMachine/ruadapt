@@ -6,9 +6,27 @@ import time
 import json
 import codecs
 from pathlib import Path
-
+from huggingface_hub import snapshot_download
 from .src.ushanka import make_ushanka
 from .src.ushanka_proj_utils import list_projection_modes
+import shutil
+import os
+from safetensors import safe_open
+from safetensors.torch import save_file
+
+def check_if_lora(model_dir):
+    if_lora = False
+    if os.path.exists(model_dir):
+        adapter_config_exists = os.path.exists(os.path.join(model_dir, 'adapter_config.json'))
+        adapter_model_exists = os.path.exists(os.path.join(model_dir, 'adapter_model.bin')) or os.path.exists(os.path.join(model_dir, 'adapter_model.safetensors'))
+        if_lora = adapter_config_exists and adapter_model_exists
+        return if_lora
+    try:
+        PeftConfig.from_pretrained(model_dir)
+        if_lora  = True
+    except:
+        pass
+    return if_lora
 
 def load_model(model_path):
     config = AutoConfig.from_pretrained(model_path)
@@ -24,6 +42,107 @@ def load_model(model_path):
     time.sleep(2)
     return model, tokenizer
 
+def load_prune_save_lora(model_path, key_filter):
+    tensors = {}
+    with safe_open(Path(model_path)/"adapter_model.safetensors", framework="pt", device="cpu") as f:
+        for key in f.keys():
+            if key_filter(key):
+                tensors[key] = f.get_tensor(key)
+                
+    with codecs.open(Path(model_path)/'adapter_config.json', 'r', 'utf-8') as config_file:
+        config = json.load(config_file)
+        
+    config['modules_to_save'] = [k for k in config['modules_to_save'] if key_filter(k)]
+    config['target_modules'] = [k for k in config['target_modules'] if key_filter(k)]
+
+    if len(config['target_modules']) == 0:
+        config['target_modules'] = None
+        
+    if len(config['modules_to_save']) == 0:
+        config['modules_to_save'] = None
+        
+    assert config['modules_to_save'] is not None or config['target_modules']
+
+    with codecs.open(Path(model_path)/'adapter_config.json', 'w', 'utf-8') as config_file:
+        json.dump(config, config_file, indent=4)
+        
+    save_file(tensors, Path(model_path)/'adapter_model.safetensors')
+
+def save_split_lora(model_path, out_dir):
+    if not os.path.exists(model_path):
+        snapshot_download(model_path, local_dir=out_dir/'full')
+        model_path = out_dir/'full'
+    
+
+    if os.path.exists(out_dir/'embeds'):
+        shutil.rmtree(out_dir/'embeds')
+    shutil.copytree(model_path, out_dir/'embeds')
+
+    if os.path.exists(out_dir/'adapters'):
+        shutil.rmtree(out_dir/'adapters')
+    shutil.copytree(model_path, out_dir/'adapters')
+
+
+    load_prune_save_lora(out_dir/'embeds', lambda key: 'lm_head' in key or 'embed_tokens' in key)
+    load_prune_save_lora(out_dir/'adapters', lambda key: 'lm_head' not in key and 'embed_tokens' not in key)
+
+    return out_dir/'embeds', out_dir/'adapters'
+
+def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_head=False):
+    config = PeftConfig.from_pretrained(model_path)
+    lm_head_alpha = config.alpha_pattern.get("lm_head", config.lora_alpha)
+
+    config.lora_alpha /= alpha_scale
+    for name in config.alpha_pattern:
+        config.alpha_pattern[name] /= alpha_scale
+
+    if not_scale_lm_head:
+        config.alpha_pattern["lm_head"] = lm_head_alpha
+
+    base_model_config = AutoConfig.from_pretrained(config.base_model_name_or_path)
+    torch_dtype = base_model_config.torch_dtype
+    base_model_path = config.base_model_name_or_path if base_model_path is None else base_model_path
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        torch_dtype=torch_dtype,
+        device_map="cuda:0",
+        attn_implementation="sdpa"
+    )
+    model = PeftModel.from_pretrained(
+        model,
+        model_path,
+        torch_dtype=torch_dtype,
+        config=config
+    )
+
+    model = model.merge_and_unload()
+    if model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
+        assert 'lm_head' not in config.modules_to_save or 'embed_tokens' not in config.modules_to_save
+        model.model.embed_tokens.weight = model.lm_head.weight
+    model.train(False)
+    return model
+
+def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=False):
+    adapters_path = None
+    if check_if_lora(model_path):
+        embeds_path, adapters_path = save_split_lora(model_path, out_dir)
+        model_path = embeds_path
+        model = load_lora(model_path, None, alpha_scale, not_scale_lm_head)
+    else:
+        config = AutoConfig.from_pretrained(model_path)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=config.torch_dtype,
+            device_map="cuda:0",
+            attn_implementation="sdpa",
+        )
+        
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model.eval()
+    print("Model loaded")
+    time.sleep(2)
+
+    return model, tokenizer, adapters_path
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -49,7 +168,7 @@ if __name__ == "__main__":
     
     target_model, target_model_tokenizer = load_model(config_dict["target_model_path"])
     source_model, source_model_tokenizer = load_model(config_dict["source_model_path"])
-    donor_model, donor_model_tokenizer = load_model(config_dict["donor_model_path"])
+    donor_model, donor_model_tokenizer, adapters_path = load_donor_model(config_dict["donor_model_path"], out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False))
     
     proj_modes = {"lm_head": args.mode,
               "model.embed_tokens": args.mode}
@@ -75,3 +194,7 @@ if __name__ == "__main__":
             tokenizer.chat_template = json.load(file)
 
     tokenizer.save_pretrained(out_dir)
+
+    if adapters_path is not None:
+        model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False))
+        model.save_pretrained(out_dir)

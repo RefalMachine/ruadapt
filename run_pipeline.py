@@ -212,6 +212,8 @@ if __name__ == '__main__':
     with codecs.open(args.pipeline_config_path, 'r', 'utf-8') as file:
         pipeline = json.load(file)
 
+    shutil.copyfile(args.pipeline_config_path, os.path.join(args.output_dir, 'pipeline_config.json'))
+    
     special_tokens = resolve_special_tokens(
         prev_step_model_path, 
         args.custom_bos_token, 

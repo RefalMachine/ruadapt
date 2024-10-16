@@ -32,6 +32,12 @@ class Params(BaseModel):
             default=''
         )
     )
+    custom_chat_template_path: str | None  = Field(
+        Query(
+            min_length=0, max_length=5000,
+            default=None
+        )
+    )
     output_dir: str = Field(
         Query(
             min_length=1, max_length=5000
@@ -82,6 +88,17 @@ class Params(BaseModel):
             default=1.0
         )
     )
+    alpha_scale: float = Field( 
+        Query(
+            ge=0.0, le=10.0, 
+            default=1.0
+        )
+    )
+    not_scale_lm_head: bool = Field( 
+        Query(
+            default=False
+        )
+    )
 
 q = []
 @app.on_event("startup")
@@ -105,7 +122,7 @@ def check_available_devices():
     return available_devices
 
 def query2params(query):
-    params = query.dict()
+    params = {k: v.strip() if type(v) == str else v for k, v in query.dict().items()}
     return params
 
 def start_pipeline(params, device):
@@ -126,7 +143,7 @@ def start_pipeline(params, device):
 
 def loop():
     while True:
-        time.sleep(5)
+        time.sleep(10)
         available_devices = check_available_devices()
         if len(available_devices) > 0 and len(q) > 0:
             query = q.pop(0)
@@ -136,5 +153,5 @@ def loop():
 t = threading.Thread(target=loop)
 t.start()
 
-uvicorn.run(app, host='0.0.0.0', port=8107, workers=1)
+uvicorn.run(app, host='0.0.0.0', port=8108, workers=1)
 
