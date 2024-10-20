@@ -79,6 +79,7 @@ def infer_vllm(
     print(sampling_params)
     outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params)
     full_results = []
+    gen_text_len = []
     with open(output_path, "w") as w:
         for record, output in zip(records, outputs):
             prompt_token_ids = output.prompt_token_ids
@@ -89,6 +90,7 @@ def infer_vllm(
             choices = []
             turns = []
             turns.append({"content": generated_text, "token_len": len(encoding.encode(generated_text))})
+            gen_text_len.append(len(encoding.encode(generated_text)))
             choices.append({"index": i, "turns": turns})
             ans = {
                 "question_id": record.get("question_id", record['instruction']),
@@ -119,6 +121,7 @@ def infer_vllm(
                 raise Exception('ERROR: infer_for')
         if infer_for == 'alpaca_eval':
             json.dump(full_results, w, ensure_ascii=False, indent=4)
+    print(sum(gen_text_len) / len(gen_text_len))
 
 if __name__ == "__main__":
     fire.Fire(infer_vllm)

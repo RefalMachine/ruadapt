@@ -53,7 +53,7 @@ def create_lep_config(target_model_path, source_model_path, donor_model_path, ou
 
     return lep_model_path, lep_config_path
 
-def create_step_config(step_idx, step, model_name_or_path, output_dir, special_tokens):
+def create_step_config(step_idx, step, model_name_or_path, output_dir, special_tokens, num_gpu=1):
     step_model_path = os.path.join(output_dir, step['type'] + str(step_idx) + '_lora')
     if not os.path.exists(step_model_path):
         os.mkdir(step_model_path)
@@ -64,6 +64,9 @@ def create_step_config(step_idx, step, model_name_or_path, output_dir, special_t
         step_config[key] = special_tokens[key]
     step_config['model_name'] = model_name_or_path
 
+    if num_gpu > 1:
+        step_config['trainer']['gradient_accumulation_steps'] = max(1, int(step_config['trainer']['gradient_accumulation_steps'] / num_gpu))
+
     step_config_path = os.path.join(step_model_path, 'step_config.json')
     with codecs.open(step_config_path, 'w', 'utf-8') as file:
         json.dump(step_config, file, ensure_ascii=False, indent=4)
@@ -73,6 +76,8 @@ def create_step_config(step_idx, step, model_name_or_path, output_dir, special_t
 def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
     output_path = os.path.join(output_dir, f'{os.path.basename(model_path)}_alpaca_eval.json')
     print(f'Infer {model_path} to {output_path}')
+    my_env = os.environ.copy()
+    my_env["CUDA_VISIBLE_DEVICES"] = "0"
     call_res = subprocess.call(
         [
             'python', '-m', 'ruadapt.inference.infer_vllm', 
@@ -81,7 +86,7 @@ def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
             output_path,
             '--infer_for', 'alpaca_eval',
             '--max_samples', str(500)
-        ]
+        ], env=my_env
     )
     if call_res:
         return call_res
@@ -100,16 +105,20 @@ def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
 def run_merge_model(lora_model_path):
     assert lora_model_path[-4:] == 'lora'
     print(f'Merging {lora_model_path} to {lora_model_path[:-5]}')
+    my_env = os.environ.copy()
+    my_env["CUDA_VISIBLE_DEVICES"] = "0"
     return subprocess.call(
         [
             'python', 'scripts/merge_lora.py', 
             lora_model_path,
             lora_model_path[:-5]
-        ]
+        ], env=my_env
     )
 
 def run_lep(lep_model_path, lep_config_path, custom_chat_template_path):
     print(f'LEP to {lep_model_path}')
+    my_env = os.environ.copy()
+    my_env["CUDA_VISIBLE_DEVICES"] = "0"
     return subprocess.call(
         [
             'python', '-m', 'ruadapt.ushanka.compose_ushanka', 
@@ -117,23 +126,42 @@ def run_lep(lep_model_path, lep_config_path, custom_chat_template_path):
             '--output_path', lep_model_path,
             '--mode', 'conversion',
             '--custom_chat_template_path', custom_chat_template_path
-        ]
+        ], env=my_env
     )
 
-def run_step(script, config_path, train_path, eval_path, output_path, sample_rate):
-    print(f'Step {script} with {config_path} to {output_path} on {train_path}')
-    return subprocess.call(
-        [
-            'python', '-m', script, 
-            config_path,
-            train_path,
-            eval_path,
-            output_path,
-            str(sample_rate)
-        ]
-    )
+def run_step(script, config_path, train_path, eval_path, output_path, sample_rate, num_gpu=1):
+    print(f'Step {script} with {config_path} to {output_path} on {train_path} with {num_gpu}')
+    if num_gpu == 1:
+        my_env = os.environ.copy()
+        my_env["CUDA_VISIBLE_DEVICES"] = "0"
+        return subprocess.call(
+            [
+                'python', '-m', script, 
+                config_path,
+                train_path,
+                eval_path,
+                output_path,
+                str(sample_rate)
+            ], env=my_env
+        )
+    else:
+        my_env = os.environ.copy()
+        my_env["CUDA_VISIBLE_DEVICES"] = ','.join([str(i) for i in range(num_gpu)])
+        return subprocess.call(
+            [
+                'torchrun',
+                '--nnodes', str(1),
+                '--nproc-per-node', str(num_gpu),
+                '-m', script, 
+                config_path,
+                train_path,
+                eval_path,
+                output_path,
+                str(sample_rate)
+            ], env=my_env
+        )
 
-def eval_instruct_model_zero_shot(model_name_or_path, output_dir=None):
+def eval_instruct_model_zero_shot(model_name_or_path, output_dir=None, num_gpu=1):
     if output_dir is None:
         output_dir = os.path.join(model_name_or_path, 'llmtf_eval')
     
@@ -147,7 +175,7 @@ def eval_instruct_model_zero_shot(model_name_or_path, output_dir=None):
         [
             'torchrun',
             '--nnodes', str(1),
-            '--nproc-per-node', str(1),
+            '--nproc-per-node', str(num_gpu),
             'run_evaluate_multinode_multigpu.py',
             '--conv_path', conv_path,
             '--model_dir', model_name_or_path,
@@ -182,7 +210,7 @@ if __name__ == '__main__':
         prev_step_model_path = args.instruct_model_name_or_path
 
     #if args.eval:
-    #    if eval_instruct_model_zero_shot(prev_step_model_path, os.path.join(args.output_dir, 'init_llmtf_eval')):
+    #    if eval_instruct_model_zero_shot(prev_step_model_path, os.path.join(args.output_dir, 'init_llmtf_eval'), num_gpu=args.num_gpu):
     #        print(f'ERROR: failed to eval {prev_step_model_path}, but continue')
 
     if not args.skip_lep:
@@ -190,9 +218,9 @@ if __name__ == '__main__':
             args.instruct_model_name_or_path, 
             args.raw_base_model_name_or_path, 
             args.ruadapt_base_model_name_or_path, 
-            args.output_dir#,
-            #args.alpha_scale,
-            #args.not_scale_lm_head
+            args.output_dir,
+            args.alpha_scale,
+            args.not_scale_lm_head
         )
 
         if run_lep(lep_model_path, lep_config_path, args.custom_chat_template_path):
@@ -202,13 +230,16 @@ if __name__ == '__main__':
         if run_infer_model(lep_model_path, args.output_dir, args.alpaca_eval_questions_path):
             print('ERROR while infer LEP model. Stoping pipeline.')
             exit(1)
+
         prev_step_model_path = lep_model_path
         if args.eval:
-            if eval_instruct_model_zero_shot(prev_step_model_path):
+            if eval_instruct_model_zero_shot(prev_step_model_path, num_gpu=args.num_gpu):
                 print(f'ERROR: failed to eval {prev_step_model_path}, but continue')
 
     with codecs.open(args.pipeline_config_path, 'r', 'utf-8') as file:
         pipeline = json.load(file)
+
+    shutil.copyfile(args.pipeline_config_path, os.path.join(args.output_dir, 'pipeline_config.json'))
 
     special_tokens = resolve_special_tokens(
         prev_step_model_path, 
@@ -218,15 +249,22 @@ if __name__ == '__main__':
     )
     
     for i, step in enumerate(pipeline):
-        assert step['type'] in ['ft', 'sft', 'kto']
-        step_model_path, step_config_path = create_step_config(i, step, prev_step_model_path, args.output_dir, special_tokens)
+        assert step['type'] in ['ft', 'sft', 'kto', 'simpo']
+        step_model_path, step_config_path = create_step_config(i, step, prev_step_model_path, args.output_dir, special_tokens, num_gpu=args.num_gpu)
         if step['type'] == 'kto':
             engine = 'kto'
+        elif step['type'] == 'simpo':
+            engine = 'cpo'
         else:
-            engine = 'unsloth' if step['unsloth'] else 'transformers'
+            engine = 'sft'
+        if not step['unsloth']:
+            engine += '_transformers'
+        else:
+            assert args.num_gpu == 1
+
         script_name = f'ruadapt.instruct_tuning.train_{engine}'
 
-        if run_step(script_name, step_config_path, step['train_file_path'], step['val_file_path'], step_model_path, args.sample_rate):
+        if run_step(script_name, step_config_path, step['train_file_path'], step['val_file_path'], step_model_path, args.sample_rate, num_gpu=args.num_gpu):
             print(f'ERROR while step {i}. Stoping pipeline.')
             exit(1)
 
@@ -240,7 +278,7 @@ if __name__ == '__main__':
             exit(1)
 
         if args.eval:
-            if eval_instruct_model_zero_shot(prev_step_model_path):
+            if eval_instruct_model_zero_shot(prev_step_model_path, num_gpu=args.num_gpu):
                 print(f'ERROR: failed to eval {prev_step_model_path}, but continue')
 
 

@@ -28,7 +28,7 @@ from peft import get_peft_model, LoraConfig
 from .dataset import ChatDataset
 from .utils import set_random_seed
 from .utils import read_jsonl
-
+os.environ["WANDB_DISABLED"] = "true"
 
 def train(
     config_file: str,
@@ -36,19 +36,18 @@ def train(
     val_file: str,
     output_dir: str,
     sample_rate: float = 1.0,
-    report_to: str = "wandb",
     seed: int = 42,
-    gradient_checkpointing: bool = False
 ):
     set_random_seed(seed)
     #logging.set_verbosity_info()
+    print(os.getenv('CUDA_VISIBLE_DEVICES', 'none'))
     with open(config_file, "r") as r:
         config = json.load(r)
 
     trainer_config = config.get("trainer")
     lora_config = config.get("lora")
     training_args = TrainingArguments(
-        output_dir=output_dir, report_to=report_to, **trainer_config
+        output_dir=output_dir, **trainer_config
     )
 
     print(training_args)
@@ -120,8 +119,9 @@ def train(
         attn_implementation="flash_attention_2",
     )
     #model = prepare_model_for_kbit_training(model)
+    gradient_checkpointing = config.get('gradient_checkpointing', False)
     if gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     
     if lora_config:
         lora_config = LoraConfig(**lora_config)
@@ -147,8 +147,8 @@ def train(
         trainer.label_names.append('labels')
     print(trainer.can_return_loss)
     print(trainer.label_names)
-    if trainer_config.get("report_to", "wandb") == "wandb":
-        wandb.init(project="ruadapt", name=config_file)
+    #if trainer_config.get("report_to", "wandb") == "wandb":
+    #    wandb.init(project="ruadapt", name=config_file)
 
     trainer.train()
 

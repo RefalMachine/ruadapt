@@ -1,0 +1,16 @@
+[
+    {
+        "type": "kto",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/kto_3b_default_unsloth.json",
+        "train_file_path": "pref_d7_train.jsonl",
+        "val_file_path": "pref_d7_val.jsonl",
+        "unsloth": true
+    },
+    {
+        "type": "simpo",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/simpo_3b_m1_unsloth.json",
+        "train_file_path": "pref_d24_train.jsonl",
+        "val_file_path": "pref_d24_val.jsonl",
+        "unsloth": true
+    }
+]

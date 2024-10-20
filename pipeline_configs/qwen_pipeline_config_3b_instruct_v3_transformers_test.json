@@ -1,0 +1,30 @@
+[
+    {
+        "type": "ft",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/ft_3b_m1_transformers.json",
+        "train_file_path": "ft_d7_copy_wiki_train_short.jsonl",
+        "val_file_path": "sft_d7_val.jsonl",
+        "unsloth": false
+    },
+    {
+        "type": "sft",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/sft_3b_m1_transformers.json",
+        "train_file_path": "sft_d7_train_short.jsonl",
+        "val_file_path": "sft_d7_val.jsonl",
+        "unsloth": false
+    },
+    {
+        "type": "kto",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/kto_3b_m1_transformers.json",
+        "train_file_path": "pref_d7_train_short.jsonl",
+        "val_file_path": "pref_d7_val.jsonl",
+        "unsloth": false
+    },
+    {
+        "type": "simpo",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/simpo_3b_m1_transformers.json",
+        "train_file_path": "pref_d24_train_short.jsonl",
+        "val_file_path": "pref_d24_val.jsonl",
+        "unsloth": false
+    }
+]

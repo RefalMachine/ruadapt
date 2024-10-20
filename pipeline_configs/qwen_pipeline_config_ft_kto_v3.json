@@ -1,0 +1,16 @@
+[
+    {
+        "type": "ft",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/sft_3b_default.json",
+        "train_file_path": "ft_d7_copy_wiki_train.jsonl",
+        "val_file_path": "sft_d7_val.jsonl",
+        "unsloth": false
+    },
+    {
+        "type": "kto",
+        "base_config_path": "ruadapt/instruct_tuning/models_configs/kto_3b_m2.json",
+        "train_file_path": "pref_d7_train.jsonl",
+        "val_file_path": "pref_d7_val.jsonl",
+        "unsloth": true
+    }
+]
