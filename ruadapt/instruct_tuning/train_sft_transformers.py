@@ -25,8 +25,8 @@ from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from peft import get_peft_model, LoraConfig
 import re
 #from unsloth.models._utils import prepare_model_for_kbit_training
-#from peft import prepare_model_for_kbit_training
-from .utils import prepare_model_for_kbit_training
+from peft import prepare_model_for_kbit_training
+#from .utils import prepare_model_for_kbit_training
 from .dataset import ChatDataset
 from .utils import set_random_seed
 from .utils import read_jsonl
@@ -114,10 +114,21 @@ def train(
     print(len(val_dataset))
     load_in_8bit = bool(config.get("load_in_8bit", False))
     load_in_4bit = bool(config.get("load_in_4bit", False))
+    bnb_config = None
+    if config['load_in_4bit']:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16
+        )
+    elif config['load_in_8bit']:
+        bnb_config = BitsAndBytesConfig(
+            load_in_8bit=True
+        )
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        load_in_8bit=load_in_8bit,
-        load_in_4bit=load_in_4bit,
+        quantization_config=bnb_config,
         device_map=f"cuda:{local_rank}",
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
@@ -127,7 +138,7 @@ def train(
     gradient_checkpointing = config.get('gradient_checkpointing', False)
     if load_in_4bit or load_in_8bit:
         print('prepare')
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": False})
     else:
         if gradient_checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})

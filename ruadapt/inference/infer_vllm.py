@@ -121,7 +121,7 @@ def infer_vllm(
                 raise Exception('ERROR: infer_for')
         if infer_for == 'alpaca_eval':
             json.dump(full_results, w, ensure_ascii=False, indent=4)
-    print(sum(gen_text_len) / len(gen_text_len))
+    print('AVERAGE_LEN: ' + str(sum(gen_text_len) / len(gen_text_len)))
 
 if __name__ == "__main__":
     fire.Fire(infer_vllm)

@@ -32,12 +32,12 @@
         "beta": 0.15,
         "desirable_weight": 1.0,
         "undesirable_weight": 1.0,
-        "max_prompt_length": 8192,
-        "max_completion_length": 8192,
-        "max_length": 8192
+        "max_prompt_length": 6144,
+        "max_completion_length": 6144,
+        "max_length": 6144
     },
     "load_in_8bit": false,
     "load_in_4bit": true,
-    "max_seq_length": 8192,
-    "max_tokens_count": 8192
+    "max_seq_length": 6144,
+    "max_tokens_count": 6144
 }

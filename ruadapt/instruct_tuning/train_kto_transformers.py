@@ -14,13 +14,15 @@ from transformers import (
     AutoConfig,
     TrainingArguments,
     Trainer,
+    BitsAndBytesConfig
 )
 from peft import LoraConfig, get_peft_model
 from trl import KTOConfig, KTOTrainer
 from datasets import Dataset as HFDataset
 
 from .utils import read_jsonl
-from .utils import prepare_model_for_kbit_training
+#from .utils import prepare_model_for_kbit_training
+from peft import prepare_model_for_kbit_training
 import os
 os.environ["WANDB_DISABLED"] = "true"
 
@@ -90,14 +92,27 @@ def train(
     max_tokens_count = config["max_tokens_count"]
     max_seq_length = config.get("max_seq_length", max_tokens_count)
     model_name = config["model_name"]
+
+    bnb_config = None
+    if config['load_in_4bit']:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16
+        )
+    elif config['load_in_8bit']:
+        bnb_config = BitsAndBytesConfig(
+            load_in_8bit=True
+        )
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        load_in_8bit=config["load_in_8bit"],
-        load_in_4bit=config["load_in_4bit"],
+        quantization_config=bnb_config,
         device_map=f"cuda:{local_rank}",
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
+
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
     tokenizer.pad_token = config["pad_token"]
     tokenizer.eos_token = config["eos_token"]
@@ -108,7 +123,7 @@ def train(
     gradient_checkpointing = config.get('gradient_checkpointing', False)
     if config["load_in_4bit"] or config["load_in_8bit"]:
         print('prepare')
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": False})
     else:
         if gradient_checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})

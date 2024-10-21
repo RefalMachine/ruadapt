@@ -33,8 +33,8 @@
         "cpo_alpha": 0,
         "beta": 2.5,
         "simpo_gamma": 0.6,
-        "max_prompt_length": 4096,
-        "max_completion_length": 4096,
+        "max_prompt_length": 6144,
+        "max_completion_length": 6144,
         "max_length": 6144
     },
     "gradient_checkpointing": true,

@@ -20,7 +20,8 @@ from peft import LoraConfig, get_peft_model
 from trl import CPOConfig, CPOTrainer
 from datasets import Dataset as HFDataset
 #from unsloth import PatchDPOTrainer, FastLanguageModel
-from .utils import prepare_model_for_kbit_training
+from peft import prepare_model_for_kbit_training
+#from .utils import prepare_model_for_kbit_training
 from .utils import read_jsonl
 import os
 
@@ -104,6 +105,7 @@ def train(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16
         )
     elif config['load_in_8bit']:
         bnb_config = BitsAndBytesConfig(
@@ -126,7 +128,7 @@ def train(
     gradient_checkpointing = config.get('gradient_checkpointing', False)
     if config["load_in_4bit"] or config["load_in_8bit"]:
         print('prepare')
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, use_reentrant=False)
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": False})
     else:
         if gradient_checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})

@@ -312,7 +312,7 @@ if __name__ == '__main__':
 
         prev_step_model_path = step_model_path[:-5]
         if run_infer_model(prev_step_model_path, args.output_dir, args.alpaca_eval_questions_path):
-            print('ERROR while infer LEP model. Stoping pipeline.')
+            print(f'ERROR while infer step{i} model. Stoping pipeline.')
             exit(1)
 
         if args.eval:
