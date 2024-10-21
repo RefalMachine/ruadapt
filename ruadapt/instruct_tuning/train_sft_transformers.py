@@ -23,8 +23,10 @@ from transformers import (
 )
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from peft import get_peft_model, LoraConfig
+import re
 #from unsloth.models._utils import prepare_model_for_kbit_training
-
+#from peft import prepare_model_for_kbit_training
+from .utils import prepare_model_for_kbit_training
 from .dataset import ChatDataset
 from .utils import set_random_seed
 from .utils import read_jsonl
@@ -51,6 +53,8 @@ def train(
     )
 
     print(training_args)
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    print('LOCAL RANK: ', local_rank)
 
     model_name = config["model_name"]
     tokenizer_name = config.get("tokenizer_name", model_name)
@@ -114,15 +118,20 @@ def train(
         model_name,
         load_in_8bit=load_in_8bit,
         load_in_4bit=load_in_4bit,
-        device_map="cpu",
+        device_map=f"cuda:{local_rank}",
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
     #model = prepare_model_for_kbit_training(model)
-    gradient_checkpointing = config.get('gradient_checkpointing', False)
-    if gradient_checkpointing:
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     
+    gradient_checkpointing = config.get('gradient_checkpointing', False)
+    if load_in_4bit or load_in_8bit:
+        print('prepare')
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
+    else:
+        if gradient_checkpointing:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
     if lora_config:
         lora_config = LoraConfig(**lora_config)
         model = get_peft_model(model, lora_config)
@@ -135,7 +144,7 @@ def train(
         for param_name, param in model.model.named_parameters():
             if 'embed_tokens' not in param_name:
                 param.requires_grad = False
-        
+
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -145,10 +154,6 @@ def train(
     )
     if len(trainer.label_names) == 0:
         trainer.label_names.append('labels')
-    print(trainer.can_return_loss)
-    print(trainer.label_names)
-    #if trainer_config.get("report_to", "wandb") == "wandb":
-    #    wandb.init(project="ruadapt", name=config_file)
 
     trainer.train()
 

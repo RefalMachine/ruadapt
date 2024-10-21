@@ -6,6 +6,34 @@ import codecs
 import json
 from transformers import AutoTokenizer
 
+def hash(f, args, kwargs):
+    f_name = f.__name__
+    args_str = '__'.join(list(map(str, args)))
+    kwargs_sorted = sorted(kwargs.items(), key=lambda x: x[0])
+    kwargs_sorted_str = '__'.join(['::'.join(list(map(str, d))) for d in kwargs_sorted])
+    return '|'.join([f_name, args_str, kwargs_sorted_str])
+
+HASH_PATH = None
+def check_op(func):
+    def inner1(*args, **kwargs):
+        assert HASH_PATH is not None
+        with codecs.open(HASH_PATH, 'r', 'utf-8') as file:
+            info = json.load(file)
+        op_hash = hash(func, args, kwargs)
+        if op_hash in info:
+            return info[op_hash]
+        
+        returned_value = func(*args, **kwargs)
+        if returned_value:
+            return returned_value
+        info[op_hash] = returned_value
+        with codecs.open(HASH_PATH, 'w', 'utf-8') as file:
+            json.dump(info, file)
+
+        return returned_value
+        
+    return inner1
+
 def resolve_special_tokens(model_path, bos_token, eos_token, pad_token):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if bos_token is None:
@@ -73,6 +101,7 @@ def create_step_config(step_idx, step, model_name_or_path, output_dir, special_t
     
     return step_model_path, step_config_path
 
+@check_op
 def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
     output_path = os.path.join(output_dir, f'{os.path.basename(model_path)}_alpaca_eval.json')
     print(f'Infer {model_path} to {output_path}')
@@ -102,6 +131,7 @@ def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
 
     return 0
 
+@check_op
 def run_merge_model(lora_model_path):
     assert lora_model_path[-4:] == 'lora'
     print(f'Merging {lora_model_path} to {lora_model_path[:-5]}')
@@ -115,6 +145,7 @@ def run_merge_model(lora_model_path):
         ], env=my_env
     )
 
+@check_op
 def run_lep(lep_model_path, lep_config_path, custom_chat_template_path):
     print(f'LEP to {lep_model_path}')
     my_env = os.environ.copy()
@@ -129,6 +160,7 @@ def run_lep(lep_model_path, lep_config_path, custom_chat_template_path):
         ], env=my_env
     )
 
+@check_op
 def run_step(script, config_path, train_path, eval_path, output_path, sample_rate, num_gpu=1):
     print(f'Step {script} with {config_path} to {output_path} on {train_path} with {num_gpu}')
     if num_gpu == 1:
@@ -145,8 +177,8 @@ def run_step(script, config_path, train_path, eval_path, output_path, sample_rat
             ], env=my_env
         )
     else:
-        my_env = os.environ.copy()
-        my_env["CUDA_VISIBLE_DEVICES"] = ','.join([str(i) for i in range(num_gpu)])
+        #my_env = os.environ.copy()
+        #my_env["CUDA_VISIBLE_DEVICES"] = ','.join([str(i) for i in range(num_gpu)])
         return subprocess.call(
             [
                 'torchrun',
@@ -158,9 +190,10 @@ def run_step(script, config_path, train_path, eval_path, output_path, sample_rat
                 eval_path,
                 output_path,
                 str(sample_rate)
-            ], env=my_env
+            ]#, env=my_env
         )
 
+@check_op
 def eval_instruct_model_zero_shot(model_name_or_path, output_dir=None, num_gpu=1):
     if output_dir is None:
         output_dir = os.path.join(model_name_or_path, 'llmtf_eval')
@@ -202,6 +235,11 @@ if __name__ == '__main__':
     if not os.path.exists(args.output_dir):
         print(f'Creating dir {args.output_dir}')
         os.makedirs(args.output_dir)
+
+    HASH_PATH = os.path.join(args.output_dir, '.hash.json')
+    if not os.path.exists(HASH_PATH):
+        with codecs.open(HASH_PATH, 'w', 'utf-8') as file:
+            json.dump({}, file)
 
     if args.skip_lep:
         print(f'WARNING: if tou skip lep step, then ruadapt_base_model_name_or_path ({args.ruadapt_base_model_name_or_path}) will be used as input instruct model for other steps!')

@@ -3,6 +3,7 @@ import os
 import random
 import torch
 import numpy as np
+import re
 
 def read_jsonl(file_name):
     with open(file_name, encoding="utf-8") as r:
@@ -36,3 +37,42 @@ def gen_batch(records, batch_size):
         batch = records[batch_start: batch_end]
         batch_start = batch_end
         yield batch
+
+def prepare_model_for_kbit_training(
+    model,
+    use_gradient_checkpointing=True,
+    use_reentrant=True,
+):
+
+    # Freeze all parameters except LoRA
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
+                param.requires_grad_(True)
+                # Also must be in float32!
+                if param.dtype != torch.float32:
+                    name = name.replace("base_model", "model", 1)
+                    layer_number = re.search(r"\.[\d]{1,}\.", name).group(0)
+                    name = name.replace(layer_number, f"[{layer_number[1:-1]}].")
+                    name = name.replace(".weight", "", 1)
+                    exec(f"{name}.to(torch.float32)")
+                pass
+            else:
+                param.requires_grad_(False)
+        pass
+    pass
+
+    if use_gradient_checkpointing == True:
+        model.gradient_checkpointing_enable({"use_reentrant": use_reentrant})
+    pass
+
+    # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
+    if use_reentrant:
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def make_inputs_require_grad(module, input, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+    return model

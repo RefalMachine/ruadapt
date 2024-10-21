@@ -20,6 +20,7 @@ from trl import KTOConfig, KTOTrainer
 from datasets import Dataset as HFDataset
 
 from .utils import read_jsonl
+from .utils import prepare_model_for_kbit_training
 import os
 os.environ["WANDB_DISABLED"] = "true"
 
@@ -84,6 +85,8 @@ def train(
     with open(config_file, "r") as r:
         config = json.load(r)
 
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    print('LOCAL RANK: ', local_rank)
     max_tokens_count = config["max_tokens_count"]
     max_seq_length = config.get("max_seq_length", max_tokens_count)
     model_name = config["model_name"]
@@ -91,7 +94,7 @@ def train(
         model_name,
         load_in_8bit=config["load_in_8bit"],
         load_in_4bit=config["load_in_4bit"],
-        device_map="cpu",
+        device_map=f"cuda:{local_rank}",
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
@@ -103,8 +106,12 @@ def train(
     tokenizer.save_pretrained(output_dir)
 
     gradient_checkpointing = config.get('gradient_checkpointing', False)
-    if gradient_checkpointing:
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    if config["load_in_4bit"] or config["load_in_8bit"]:
+        print('prepare')
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
+    else:
+        if gradient_checkpointing:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     lora_config = config["lora"]
     if lora_config:

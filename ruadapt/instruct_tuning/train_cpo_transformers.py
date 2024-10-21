@@ -14,12 +14,13 @@ from transformers import (
     AutoConfig,
     TrainingArguments,
     Trainer,
+    BitsAndBytesConfig
 )
 from peft import LoraConfig, get_peft_model
 from trl import CPOConfig, CPOTrainer
 from datasets import Dataset as HFDataset
 #from unsloth import PatchDPOTrainer, FastLanguageModel
-
+from .utils import prepare_model_for_kbit_training
 from .utils import read_jsonl
 import os
 
@@ -83,6 +84,8 @@ def train(
     with open(config_file, "r") as r:
         config = json.load(r)
 
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    print('LOCAL RANK: ', local_rank)
     max_tokens_count = config["max_tokens_count"]
     max_seq_length = config.get("max_seq_length", max_tokens_count)
     model_name = config["model_name"]
@@ -95,11 +98,21 @@ def train(
         load_in_4bit=config["load_in_4bit"],
         attn_implementation="flash_attention_2",
     )'''
+    bnb_config = None
+    if config['load_in_4bit']:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+    elif config['load_in_8bit']:
+        bnb_config = BitsAndBytesConfig(
+            load_in_8bit=True
+        )
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        load_in_8bit=config["load_in_8bit"],
-        load_in_4bit=config["load_in_4bit"],
-        device_map="cpu",
+        quantization_config=bnb_config,
+        device_map=f"cuda:{local_rank}",
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
@@ -109,9 +122,14 @@ def train(
     tokenizer.bos_token = config["bos_token"]
     tokenizer.padding_side = "left"
     tokenizer.save_pretrained(output_dir)
+
     gradient_checkpointing = config.get('gradient_checkpointing', False)
-    if gradient_checkpointing:
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    if config["load_in_4bit"] or config["load_in_8bit"]:
+        print('prepare')
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, use_reentrant=False)
+    else:
+        if gradient_checkpointing:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     lora_config = config["lora"]
     if lora_config:
