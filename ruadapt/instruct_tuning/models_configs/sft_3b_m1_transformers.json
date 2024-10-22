@@ -29,7 +29,7 @@
         "modules_to_save": ["lm_head"]
     },
     "load_in_8bit": false,
-    "gradient_checkpointing": false,
+    "gradient_checkpointing": true,
     "load_in_4bit": true,
     "only_target_loss": true,
     "max_tokens_count": 6144,
