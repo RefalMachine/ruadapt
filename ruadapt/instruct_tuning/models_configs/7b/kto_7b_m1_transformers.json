@@ -19,7 +19,8 @@
         "seed": 1337,
         "remove_unused_columns": false,
         "max_grad_norm": 0.5,
-        "weight_decay": 0.04
+        "weight_decay": 0.04,
+        "ddp_find_unused_parameters": false
     },
     "lora": {
         "r": 64,

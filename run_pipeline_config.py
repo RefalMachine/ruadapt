@@ -88,6 +88,7 @@ def create_step_config(step_idx, step, model_name_or_path, output_dir, special_t
 
     with codecs.open(step['base_config_path'], 'r', 'utf-8') as file:
         step_config = json.load(file)
+    print(step_config)
     for key in special_tokens:
         step_config[key] = special_tokens[key]
     step_config['model_name'] = model_name_or_path
@@ -161,7 +162,7 @@ def run_lep(lep_model_path, lep_config_path, custom_chat_template_path):
     )
 
 @check_op
-def run_step(script, config_path, train_path, eval_path, output_path, sample_rate, num_gpu=1):
+def run_step(script, config_path, train_path, eval_path, output_path, custom_chat_template_path, sample_rate, num_gpu=1):
     print(f'Step {script} with {config_path} to {output_path} on {train_path} with {num_gpu}')
     if num_gpu == 1:
         my_env = os.environ.copy()
@@ -173,6 +174,7 @@ def run_step(script, config_path, train_path, eval_path, output_path, sample_rat
                 train_path,
                 eval_path,
                 output_path,
+                custom_chat_template_path,
                 str(sample_rate)
             ], env=my_env
         )
@@ -189,6 +191,7 @@ def run_step(script, config_path, train_path, eval_path, output_path, sample_rat
                 train_path,
                 eval_path,
                 output_path,
+                custom_chat_template_path,
                 str(sample_rate)
             ]#, env=my_env
         )
@@ -302,7 +305,7 @@ if __name__ == '__main__':
 
         script_name = f'ruadapt.instruct_tuning.train_{engine}'
 
-        if run_step(script_name, step_config_path, step['train_file_path'], step['val_file_path'], step_model_path, args.sample_rate, num_gpu=args.num_gpu):
+        if run_step(script_name, step_config_path, step['train_file_path'], step['val_file_path'], step_model_path, args.custom_chat_template_path, args.sample_rate, num_gpu=args.num_gpu):
             print(f'ERROR while step {i}. Stoping pipeline.')
             exit(1)
 

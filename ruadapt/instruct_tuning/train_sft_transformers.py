@@ -30,6 +30,8 @@ from peft import prepare_model_for_kbit_training
 from .dataset import ChatDataset
 from .utils import set_random_seed
 from .utils import read_jsonl
+import codecs
+
 os.environ["WANDB_DISABLED"] = "true"
 
 def train(
@@ -37,12 +39,14 @@ def train(
     train_file: str,
     val_file: str,
     output_dir: str,
+    custom_chat_template_path: str = None,
     sample_rate: float = 1.0,
     seed: int = 42,
 ):
     set_random_seed(seed)
     #logging.set_verbosity_info()
     print(os.getenv('CUDA_VISIBLE_DEVICES', 'none'))
+    print(custom_chat_template_path)
     with open(config_file, "r") as r:
         config = json.load(r)
 
@@ -68,13 +72,15 @@ def train(
     tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids([config["eos_token"]])[0]
     tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids([config["pad_token"]])[0]
 
+    if custom_chat_template_path is not None:
+        with codecs.open(custom_chat_template_path, 'r', 'utf-8') as file:
+            tokenizer.chat_template = json.load(file)
+
     #tokenizer.add_special_tokens({'pad_token': config["pad_token"]})
     #tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = 'left'
     #tokenizer.save_pretrained(output_dir)
 
-    print(tokenizer.pad_token)
-    print(tokenizer.pad_token_id)
     print(config)
 
     train_records = read_jsonl(train_file)
@@ -138,10 +144,10 @@ def train(
     gradient_checkpointing = config.get('gradient_checkpointing', False)
     if load_in_4bit or load_in_8bit:
         print('prepare')
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": False})
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": True})
     else:
         if gradient_checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
 
     if lora_config:
         lora_config = LoraConfig(**lora_config)

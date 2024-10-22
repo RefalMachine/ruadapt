@@ -17,7 +17,8 @@
         "optim": "adamw_torch",
         "seed": 1337,
         "max_grad_norm": 1.0,
-        "weight_decay": 0.05
+        "weight_decay": 0.05,
+        "ddp_find_unused_parameters": false
     },
     "lora": {
         "r": 32,

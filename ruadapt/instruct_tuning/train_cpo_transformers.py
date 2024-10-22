@@ -24,6 +24,7 @@ from peft import prepare_model_for_kbit_training
 #from .utils import prepare_model_for_kbit_training
 from .utils import read_jsonl
 import os
+import codecs
 
 os.environ["WANDB_DISABLED"] = "true"
 
@@ -79,6 +80,7 @@ def train(
     train_path: str,
     eval_path: str,
     output_dir: str,
+    custom_chat_template_path: str | None = None,
     sample_rate: float = 1.0,
 ):
     #PatchDPOTrainer()
@@ -123,15 +125,20 @@ def train(
     tokenizer.eos_token = config["eos_token"]
     tokenizer.bos_token = config["bos_token"]
     tokenizer.padding_side = "left"
+
+    if custom_chat_template_path is not None:
+        with codecs.open(custom_chat_template_path, 'r', 'utf-8') as file:
+            tokenizer.chat_template = json.load(file)
+
     tokenizer.save_pretrained(output_dir)
 
     gradient_checkpointing = config.get('gradient_checkpointing', False)
     if config["load_in_4bit"] or config["load_in_8bit"]:
         print('prepare')
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": False})
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": True})
     else:
         if gradient_checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
 
     lora_config = config["lora"]
     if lora_config:
