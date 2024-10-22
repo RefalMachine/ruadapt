@@ -1,0 +1,36 @@
+{
+    "trainer": {
+        "evaluation_strategy": "steps",
+        "per_device_train_batch_size": 1,
+        "per_device_eval_batch_size": 1,
+        "gradient_accumulation_steps": 128,
+        "eval_steps": 16,
+        "save_steps": 16,
+        "logging_steps": 1,
+        "learning_rate": 0.00005,
+        "num_train_epochs": 1,
+        "save_total_limit": 1,
+        "lr_scheduler_type": "cosine",
+        "warmup_steps": 16,
+        "bf16": true,
+        "fp16": false,
+        "optim": "adamw_torch",
+        "seed": 1337,
+        "max_grad_norm": 1.0,
+        "weight_decay": 0.05,
+        "ddp_find_unused_parameters": false
+    },
+    "lora": {
+        "r": 32,
+        "lora_alpha": 16,
+        "lora_dropout": 0.0,
+        "bias": "none",
+        "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "modules_to_save": ["lm_head"]
+    },
+    "load_in_8bit": false,
+    "load_in_4bit": false,
+    "only_target_loss": true,
+    "max_tokens_count": 4096,
+    "max_seq_length": 4096
+}
