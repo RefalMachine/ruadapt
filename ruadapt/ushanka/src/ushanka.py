@@ -72,6 +72,7 @@ def ushanka_embedding_projection(target_model, source_model, donor_model,
                                  model_tokenizer, donor_tokenizer, new_tokenizer,
                                  module_projection_modes=None, coocurrence_map_path=None,
                                  overlap_penalty=1.0):
+    global EMB_MODULES
     if module_projection_modes is None:
         module_projection_modes = {}
     # Fill missing entries with DEFAULT_PROJECTION_MODE
