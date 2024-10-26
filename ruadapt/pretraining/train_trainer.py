@@ -665,8 +665,11 @@ def main():
         logger.info("Init new peft model")
         target_modules = training_args.trainable.split(',')
         modules_to_save = training_args.modules_to_save
-        if modules_to_save is not None:
+        if modules_to_save is not None and len(modules_to_save) > 0:
             modules_to_save = modules_to_save.split(',')
+        else:
+            modules_to_save = None
+            
         lora_rank = training_args.lora_rank
         lora_dropout = training_args.lora_dropout
         lora_alpha = training_args.lora_alpha
