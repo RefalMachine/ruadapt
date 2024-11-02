@@ -28,12 +28,12 @@ def check_if_lora(model_dir):
         pass
     return if_lora
 
-def load_model(model_path):
+def load_model(model_path, device="cpu"):
     config = AutoConfig.from_pretrained(model_path)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=config.torch_dtype,
-        device_map="cuda:0",
+        device_map=device,
         attn_implementation="sdpa",
     )
     model.eval()
@@ -133,7 +133,7 @@ def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=Fal
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=config.torch_dtype,
-            device_map="cuda:0",
+            device_map="cuda:2",
             attn_implementation="sdpa",
         )
         
@@ -166,8 +166,8 @@ if __name__ == "__main__":
           sep='\n'
          )
     
-    target_model, target_model_tokenizer = load_model(config_dict["target_model_path"])
-    source_model, source_model_tokenizer = load_model(config_dict["source_model_path"])
+    target_model, target_model_tokenizer = load_model(config_dict["target_model_path"], device="cpu")
+    source_model, source_model_tokenizer = load_model(config_dict["source_model_path"], device="cpu")
     donor_model, donor_model_tokenizer, adapters_path = load_donor_model(config_dict["donor_model_path"], out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False))
     
     proj_modes = {"lm_head": args.mode,

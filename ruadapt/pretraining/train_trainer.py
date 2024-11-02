@@ -665,11 +665,11 @@ def main():
         logger.info("Init new peft model")
         target_modules = training_args.trainable.split(',')
         modules_to_save = training_args.modules_to_save
-        if modules_to_save is not None and len(modules_to_save) > 0:
+        if modules_to_save is not None and len(modules_to_save) > 0 and modules_to_save != 'None' and modules_to_save.lower() != 'null':
             modules_to_save = modules_to_save.split(',')
         else:
             modules_to_save = None
-            
+
         lora_rank = training_args.lora_rank
         lora_dropout = training_args.lora_dropout
         lora_alpha = training_args.lora_alpha
@@ -728,6 +728,8 @@ def main():
     trainer.add_callback(EvaluateFirstStepCallback())
 
     if training_args.peft:
+        if training_args.gradient_checkpointing:
+            model.enable_input_require_grads()
         trainer.add_callback(SavePeftModelCallback)
 
     # Training
