@@ -52,13 +52,15 @@ def load_prune_save_lora(model_path, key_filter):
     with codecs.open(Path(model_path)/'adapter_config.json', 'r', 'utf-8') as config_file:
         config = json.load(config_file)
         
-    config['modules_to_save'] = [k for k in config['modules_to_save'] if key_filter(k)]
+    if config['modules_to_save'] is not None:
+        config['modules_to_save'] = [k for k in config['modules_to_save'] if key_filter(k)]
+
     config['target_modules'] = [k for k in config['target_modules'] if key_filter(k)]
 
     if len(config['target_modules']) == 0:
         config['target_modules'] = None
         
-    if len(config['modules_to_save']) == 0:
+    if config['modules_to_save']  is None or len(config['modules_to_save']) == 0:
         config['modules_to_save'] = None
         
     assert config['modules_to_save'] is not None or config['target_modules']
