@@ -90,8 +90,8 @@ def infer_vllm(
 
             choices = []
             turns = []
-            turns.append({"content": generated_text, "token_len": len(encoding.encode(generated_text))})
-            gen_text_len.append(len(encoding.encode(generated_text)))
+            turns.append({"content": generated_text, "token_len": len(encoding.encode(generated_text, allowed_special=set({'<|endoftext|>'})))})
+            gen_text_len.append(len(encoding.encode(generated_text, allowed_special=set({'<|endoftext|>'}))))
             choices.append({"index": i, "turns": turns})
             ans = {
                 "question_id": record.get("question_id", record['instruction']),

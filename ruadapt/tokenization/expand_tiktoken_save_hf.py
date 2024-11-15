@@ -5,7 +5,7 @@ import os
 import json
 from .convert_tiktoken import generate_vocab_and_merges
 from argparse import ArgumentParser
-
+import re
 # Based on Qwen
 
 def custom_tiktoken_extend(tiktoken_base_path, tiktoken_new_path):
@@ -30,12 +30,31 @@ def custom_tiktoken_extend(tiktoken_base_path, tiktoken_new_path):
         "special_tokens": special_tokens,
     }
 
+def check_contains_digit(t):
+    m = re.match('[0-9]+', t)
+    return m is not None
+
+def check_if_number(t):
+    m = re.match('[0-9]+', t)
+    if m is None:
+        return False
+    return len(m[0]) == len(t) and len(t) > 1
+
+def filter_numbers(vocab, merges):
+    merges = [m for m in merges if not check_contains_digit(m)]
+    vocab = sorted([[v, i] for v, i in vocab.items()], key=lambda x: x[1])
+    vocab = [v[0] for v in vocab if not check_if_number(v[0])]
+    vocab = {t: i for i, t in enumerate(vocab)}
+    return vocab, merges
+
+
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--tiktoken_base_path')
     parser.add_argument('--tiktoken_new_path')
     parser.add_argument('--output_dir')
     parser.add_argument('--init_output_from', default=None)
+    parser.add_argument('--filter_numbers', action='store_true')
 
     args = parser.parse_args()
         
@@ -51,6 +70,9 @@ if __name__ == '__main__':
     tiktoken_tokenizer = tiktoken.core.Encoding(tiktoken_tokenizer_dict.pop('name'), **tiktoken_tokenizer_dict)
 
     vocab, merges = generate_vocab_and_merges(tiktoken_tokenizer)
+    if args.filter_numbers:
+        vocab, merges = filter_numbers(vocab, merges) 
+
     print(len(vocab), len(merges))
 
     os.remove(os.path.join(output_dir, 'tokenizer.json'))

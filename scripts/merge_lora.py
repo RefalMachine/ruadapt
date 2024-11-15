@@ -4,8 +4,22 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from peft import PeftConfig, PeftModel
 
 
-def merge_lora(model_name: str, output_path: str, device_map: str = "auto"):
+def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alpha_scale=1.0):
+    print(model_name)
+    print(output_path)
+    print(alpha_scale)
     config = PeftConfig.from_pretrained(model_name)
+    lm_head_alpha = config.alpha_pattern.get("lm_head", config.lora_alpha)
+
+    config.lora_alpha /= alpha_scale
+    for name in config.alpha_pattern:
+        config.alpha_pattern[name] /= alpha_scale
+
+    #if True:
+    #    config.alpha_pattern["lm_head"] = lm_head_alpha
+
+    #config.lora_alpha /= alpha_scale
+    print(config.lora_alpha)
     base_model_path = config.base_model_name_or_path
     #generation_config = GenerationConfig.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -18,7 +32,7 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto"):
     )
 
     lora_model = PeftModel.from_pretrained(
-        base_model, model_name, torch_dtype=torch.bfloat16, device_map=device_map
+        base_model, model_name, torch_dtype=torch.bfloat16, device_map=device_map, config=config
     )
 
     lora_model = lora_model.merge_and_unload()
@@ -38,8 +52,6 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto"):
     lora_model.save_pretrained(output_path)
     tokenizer.save_pretrained(output_path)
     #generation_config.save_pretrained(output_path)
-
-
 
 if __name__ == "__main__":
     fire.Fire(merge_lora)

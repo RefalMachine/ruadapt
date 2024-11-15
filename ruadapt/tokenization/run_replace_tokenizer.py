@@ -191,8 +191,10 @@ if __name__ == '__main__':
     #print(model.model.embed_tokens.weight)
     #print(model.lm_head.weight)
 
-
-
+    new_tokens = [f"<|free_token{i+1}|>" for i in range(21)]
+    tokenizer_new.add_tokens(new_tokens)
+    model.resize_token_embeddings(len(tokenizer_new))
+    print(model.lm_head.weight.shape)
     model.save_pretrained(args.output_path)
     tokenizer_new.save_pretrained(args.output_path)
 
