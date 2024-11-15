@@ -2,9 +2,27 @@ import fire
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from peft import PeftConfig, PeftModel
+import os
 
+def if_lora(model_dir):
+    adapter_config_exists = os.path.exists(os.path.join(model_dir, 'adapter_config.json'))
+    adapter_model_exists = os.path.exists(os.path.join(model_dir, 'adapter_model.bin')) or os.path.exists(os.path.join(model_dir, 'adapter_model.safetensors'))
+    return adapter_config_exists and adapter_model_exists
 
 def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alpha_scale=1.0):
+    if not if_lora(model_name):
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            load_in_8bit=False,
+            torch_dtype=torch.bfloat16,
+            device_map=device_map,
+        )
+
+        base_model.save_pretrained(output_path)
+        tokenizer.save_pretrained(output_path)
+        return 
+
     print(model_name)
     print(output_path)
     print(alpha_scale)
