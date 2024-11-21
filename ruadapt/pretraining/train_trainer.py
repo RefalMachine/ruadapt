@@ -339,7 +339,7 @@ def main():
 
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_clm", model_args, data_args)
+    #send_example_telemetry("run_clm", model_args, data_args)
 
     # Setup logging
     logging.basicConfig(
@@ -531,6 +531,7 @@ def main():
         return output
 
     with training_args.main_process_first(desc="dataset map tokenization"):
+        raw_datasets = raw_datasets.filter(lambda example: example["domain"] != 'enwiki')
         if not data_args.streaming:
             tokenized_datasets = raw_datasets.map(
                 tokenize_function,
@@ -694,6 +695,11 @@ def main():
             alpha_pattern=alpha_pattern,
             use_dora=use_dora)
         model = get_peft_model(model, peft_config)
+        if model.config.tie_word_embeddings and 'lm_head' in modules_to_save:
+            #assert 'em'
+            print('Tie embeddings')
+            print(model)
+            model.base_model.model.model.embed_tokens.weight = model.base_model.model.lm_head.modules_to_save["default"].weight
         model.print_trainable_parameters()
     else:
         logger.info("Ruadapt default")

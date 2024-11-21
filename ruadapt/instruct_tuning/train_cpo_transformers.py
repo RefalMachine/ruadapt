@@ -3,7 +3,7 @@ import random
 import fire
 from typing import List, Dict
 
-import wandb
+#import wandb
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -135,10 +135,13 @@ def train(
     gradient_checkpointing = config.get('gradient_checkpointing', False)
     if config["load_in_4bit"] or config["load_in_8bit"]:
         print('prepare')
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": True})
+        #prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": True})
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
     else:
         if gradient_checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
+            #model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
+            model.gradient_checkpointing_enable()
+            model.enable_input_require_grads()
 
     lora_config = config["lora"]
     if lora_config:

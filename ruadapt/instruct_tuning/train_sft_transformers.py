@@ -3,7 +3,7 @@ import json
 import os
 
 import fire
-import wandb
+#import wandb
 import torch
 import numpy as np
 from transformers import (
@@ -20,6 +20,7 @@ from transformers import (
     TrainerState,
     TrainerControl,
     BitsAndBytesConfig,
+    HfArgumentParser
 )
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from peft import get_peft_model, LoraConfig
@@ -43,23 +44,42 @@ def train(
     sample_rate: float = 1.0,
     seed: int = 42,
 ):
-    set_random_seed(seed)
+    #set_random_seed(seed)
     #logging.set_verbosity_info()
     print(os.getenv('CUDA_VISIBLE_DEVICES', 'none'))
     print(custom_chat_template_path)
     with open(config_file, "r") as r:
         config = json.load(r)
+    
 
     trainer_config = config.get("trainer")
+    trainer_config['output_dir'] = output_dir
+    parser = HfArgumentParser((TrainingArguments))
+    training_args = parser.parse_dict(trainer_config)[0]
+    #training_args.output_dir = output_dir
     lora_config = config.get("lora")
-    training_args = TrainingArguments(
-        output_dir=output_dir, **trainer_config
-    )
-
-    print(training_args)
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    #trainer_config['device'] = f"cuda:{local_rank}"
+    #training_args = TrainingArguments(
+    #    output_dir=output_dir, **trainer_config
+    #)
+    #training_args.device = f"cuda:{training_args.local_rank}"
+    print(training_args)
+    print(
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+        + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
+    )
+    #training_args.device = f"cuda:{local_rank}"
+    print(
+        f"device: {training_args.device}"
+    )
+    print(training_args.distributed_state)
+    print(training_args.distributed_state.device)
+    print(
+        f"device: {training_args.device}"
+    )
     print('LOCAL RANK: ', local_rank)
-
+    #exit(1)
     model_name = config["model_name"]
     tokenizer_name = config.get("tokenizer_name", model_name)
 
@@ -144,10 +164,13 @@ def train(
     gradient_checkpointing = config.get('gradient_checkpointing', False)
     if load_in_4bit or load_in_8bit:
         print('prepare')
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": True})
+        #prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing, gradient_checkpointing_kwargs={"use_reentrant": True})
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing)
     else:
         if gradient_checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
+            #model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
+            model.gradient_checkpointing_enable()
+            model.enable_input_require_grads()
 
     if lora_config:
         lora_config = LoraConfig(**lora_config)
@@ -174,9 +197,9 @@ def train(
 
     trainer.train()
 
-    print(model.model.model.embed_tokens.weight[0])
-    print(model.lm_head.original_module.weight[0])
-    print(model.lm_head.modules_to_save['default'].weight[0])
+    #print(model.model.model.embed_tokens.weight[0])
+    #print(model.lm_head.original_module.weight[0])
+    #print(model.lm_head.modules_to_save['default'].weight[0])
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 

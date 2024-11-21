@@ -13,18 +13,33 @@ def compose_sft_dataset(config_path: str, train_path: str, val_path: str):
     records = []
     dataset_name = config.get("dataset_name", "IlyaGusev/saiga_scored")
     revision = config["dataset_revision"]
+    system_prompt_dropout = config.get("system_prompt_dropout", 0.0)
+
     for row in load_dataset(dataset_name, split="train", revision=revision):
-        is_bad_by_regex = row["is_bad_by_regex"]
+        is_bad_by_regex = row.get("is_bad_by_regex", False)
         if config.get("exclude_regex", False) and is_bad_by_regex:
             continue
 
-        score = row["opus_score"]
-        if score < config.get("min_score", 8):
+        score = row.get("opus_score")
+        if score is not None and score < config.get("min_score", 8):
             continue
 
+        if "messages" in row:
+            messages = row["messages"]
+        else:
+            messages = row["prompt"] + row["chosen"]
+
+        if system_prompt_dropout != 0.0 and messages[0]["role"] == "system":
+            system_message = messages[0]["content"].lower()
+            substrings = ("сайга", "gpt-4o", "claude")
+            if any(ss in system_message for ss in substrings):
+                if random.random() < system_prompt_dropout:
+                    messages = messages[1:]
+
         mapping = {"bot": "assistant"}
-        for message in row["messages"]:
+        for message in messages:
             message["role"] = mapping.get(message["role"], message["role"])
+        row["messages"] = messages
 
         records.append(row)
 

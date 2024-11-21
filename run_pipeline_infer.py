@@ -132,6 +132,18 @@ def eval_instruct_model_zero_shot(model_name_or_path, output_dir=None, num_gpu=1
             '--short'
         ], cwd='./ruadapt/evaluation/llmtf_open'
      )
+@check_op
+def run_arena_eval(model_answers_path, reference_answers_path, judge_url, output_dir):
+    return subprocess.call(
+        [
+            'python',
+            'run_llm_as_a_judge.py',
+            '--model_answers_path', model_answers_path,
+            '--reference_answers_path', reference_answers_path,
+            '--judge_url', judge_url,
+            '--output_dir', output_dir
+        ], cwd='./ruadapt/evaluation/llmtf_open'
+     )
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -211,9 +223,7 @@ if __name__ == '__main__':
             print(f'ERROR while infer step{i} model. Stoping pipeline.')
             exit(1)
 
-        
-
-
-
-        
-        
+        model_answers_path = os.path.join(args.output_dir, f'{os.path.basename(prev_step_model_path)}_alpaca_eval.json')
+        if run_arena_eval(model_answers_path, args.reference_answers_path, args.judge_url, prev_step_model_path + '/llmtf_eval'):
+            print(f'ERROR while infer step{i} model. Stoping pipeline.')
+            exit(1)

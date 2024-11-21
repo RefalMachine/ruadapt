@@ -12,7 +12,10 @@ def scale(config, alpha_scale):
 
 def merge_loras(loras_paths: str, loras_ascales: str, output_path: str, device_map: str = "auto"):
     loras_paths = loras_paths.split(',')
-    print(loras_ascales)
+    if type(loras_ascales) != list and type(loras_ascales) != tuple:
+        loras_ascales = [loras_ascales]
+
+    print(loras_ascales, type(loras_ascales))
     #loras_ascales = list(map(float, loras_ascales.split(',')))
     print(loras_paths)
     

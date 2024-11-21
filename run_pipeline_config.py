@@ -133,16 +133,17 @@ def run_infer_model(model_path, output_dir, alpaca_eval_questions_path):
     return 0
 
 @check_op
-def run_merge_model(lora_model_path):
+def run_merge_model(lora_model_path, alpha_scale=1.0):
     assert lora_model_path[-4:] == 'lora'
-    print(f'Merging {lora_model_path} to {lora_model_path[:-5]}')
+    print(f'Merging {lora_model_path} to {lora_model_path[:-5]} with as={alpha_scale}')
     my_env = os.environ.copy()
     my_env["CUDA_VISIBLE_DEVICES"] = "0"
     return subprocess.call(
         [
             'python', 'scripts/merge_lora.py', 
             lora_model_path,
-            lora_model_path[:-5]
+            lora_model_path[:-5],
+            '--alpha_scale', str(alpha_scale)
         ], env=my_env
     )
 
@@ -150,7 +151,7 @@ def run_merge_model(lora_model_path):
 def run_lep(lep_model_path, lep_config_path, custom_chat_template_path):
     print(f'LEP to {lep_model_path}')
     my_env = os.environ.copy()
-    my_env["CUDA_VISIBLE_DEVICES"] = "0"
+    my_env["CUDA_VISIBLE_DEVICES"] = "0,1"
     return subprocess.call(
         [
             'python', '-m', 'ruadapt.ushanka.compose_ushanka', 
@@ -216,10 +217,9 @@ def eval_instruct_model_zero_shot(model_name_or_path, output_dir=None, num_gpu=1
             '--conv_path', conv_path,
             '--model_dir', model_name_or_path,
             '--output_dir', output_dir,
-            '--batch_size', str(8),
+            '--batch_size', str(2),
             '--max_len', str(4000),
             '--few_shot_count', str(0),
-            '--force_recalc',
             '--short'
         ], cwd='./ruadapt/evaluation/llmtf_open'
      )
@@ -229,6 +229,7 @@ if __name__ == '__main__':
     parser.add_argument('--config_path')
     args = parser.parse_args()
 
+    print('HELLO THERE')
     with codecs.open(args.config_path, 'r', 'utf-8') as file:
         params = json.load(file)
         for key in params:
@@ -309,7 +310,7 @@ if __name__ == '__main__':
             print(f'ERROR while step {i}. Stoping pipeline.')
             exit(1)
 
-        if run_merge_model(step_model_path):
+        if run_merge_model(step_model_path, step.get('alpha_scale', 1.0)):
             print(f'ERROR while step {i}. Stoping pipeline.')
             exit(1)
 
@@ -321,11 +322,3 @@ if __name__ == '__main__':
         if args.eval:
             if eval_instruct_model_zero_shot(prev_step_model_path, num_gpu=args.num_gpu):
                 print(f'ERROR: failed to eval {prev_step_model_path}, but continue')
-
-
-        
-
-
-
-        
-        

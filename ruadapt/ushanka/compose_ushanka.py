@@ -13,6 +13,7 @@ import shutil
 import os
 from safetensors import safe_open
 from safetensors.torch import save_file
+import gc
 
 def check_if_lora(model_dir):
     if_lora = False
@@ -90,7 +91,7 @@ def save_split_lora(model_path, out_dir):
 
     return out_dir/'embeds', out_dir/'adapters'
 
-def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_head=False):
+def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_head=False, device='cuda:0'):
     config = PeftConfig.from_pretrained(model_path)
     lm_head_alpha = config.alpha_pattern.get("lm_head", config.lora_alpha)
 
@@ -107,9 +108,10 @@ def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_he
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=torch_dtype,
-        device_map="cuda:0",
+        device_map=device,
         attn_implementation="sdpa"
     )
+
     model = PeftModel.from_pretrained(
         model,
         model_path,
@@ -117,14 +119,33 @@ def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_he
         config=config
     )
 
+    if model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save: 
+        with torch.no_grad():
+            delta = model.base_model.model.lm_head.modules_to_save['default'].weight - model.base_model.model.lm_head.original_module.weight
+            delta /= alpha_scale
+            new_embeds = model.base_model.model.lm_head.original_module.weight + delta
+
     model = model.merge_and_unload()
+    model.train(False)
+
+    print(model.model.embed_tokens.weight[0])
+    print(model.lm_head.weight[0])
+    print(model.config.tie_word_embeddings)
+    print(config.modules_to_save)
+
     if model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
         assert 'lm_head' not in config.modules_to_save or 'embed_tokens' not in config.modules_to_save
-        model.model.embed_tokens.weight = model.lm_head.weight
+        with torch.no_grad():
+            model.lm_head.weight.copy_(new_embeds)
+            model.model.embed_tokens.weight = model.lm_head.weight
+
+    print(model.model.embed_tokens.weight[0])
+    print(model.lm_head.weight[0])
+
     model.train(False)
     return model
 
-def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=False):
+def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=False, device="cuda:0"):
     adapters_path = None
     if check_if_lora(model_path):
         embeds_path, adapters_path = save_split_lora(model_path, out_dir)
@@ -135,7 +156,7 @@ def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=Fal
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=config.torch_dtype,
-            device_map="cuda:2",
+            device_map=device_map,
             attn_implementation="sdpa",
         )
         
@@ -170,7 +191,10 @@ if __name__ == "__main__":
     
     target_model, target_model_tokenizer = load_model(config_dict["target_model_path"], device="cpu")
     source_model, source_model_tokenizer = load_model(config_dict["source_model_path"], device="cpu")
-    donor_model, donor_model_tokenizer, adapters_path = load_donor_model(config_dict["donor_model_path"], out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False))
+    donor_model, donor_model_tokenizer, adapters_path = load_donor_model(
+        config_dict["donor_model_path"], out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False),
+        device='cuda:0'
+    )
     
     proj_modes = {"lm_head": args.mode,
               "model.embed_tokens": args.mode}
@@ -197,6 +221,11 @@ if __name__ == "__main__":
 
     tokenizer.save_pretrained(out_dir)
 
+    
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+
     if adapters_path is not None:
-        model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False))
+        model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False), device='cuda:0')
         model.save_pretrained(out_dir)
