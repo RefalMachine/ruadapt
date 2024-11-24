@@ -12,6 +12,14 @@ def fix_text(text):
      text = text.replace("\\xa0", " ").strip()
      return text
 
+system_black_list = [
+    'Ты — Сайга, русскоязычный автоматический ассистент. Ты разговариваешь с людьми и помогаешь им.',
+    'Ты - gpt-4o, новейшая языковая модель, разработанная OpenAI',
+    'Ты — Claude Haiku, языковая модель, разработанная Anthropic.',
+    'Ты — Suzume, языковая модель, разработанная Lightblue',
+    'Ты - gpt-4o-mini, новейшая языковая модель, разработанная OpenAI',
+    'Ты — Claude 3.5 Sonnet, последняя языковая модель, разработанная Anthropic.'
+]
 
 def compose_pref_dataset(config_path: str, train_path: str, val_path: str):
     with open(config_path) as r:
@@ -81,6 +89,9 @@ def compose_pref_dataset(config_path: str, train_path: str, val_path: str):
         for message in row["rejected"]:
             message["role"] = mapping.get(message["role"], message["role"])
 
+        if row['prompt'][0]['role'] == 'system' and row['prompt'][0]['content'] in system_black_list:
+            if random.random() > 0.1:
+                row['prompt'] = row['prompt'][1:]
         records.append(row)
 
     random.shuffle(records)

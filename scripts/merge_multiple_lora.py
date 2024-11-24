@@ -32,24 +32,33 @@ def merge_loras(loras_paths: str, loras_ascales: str, output_path: str, device_m
                 torch_dtype=torch.bfloat16,
                 device_map=device_map,
             )
-            model = PeftModel.from_pretrained(
-                model, lora_path, torch_dtype=torch.bfloat16, device_map=device_map, config=config
-            )
-            model = model.merge_and_unload()
-            model.train(False)
+            tie_word_embeddings = model.config.tie_word_embeddings
         else:
             if base_model_path != config.base_model_name_or_path:
                 print(base_model_path)
                 print(config.base_model_name_or_path)
-            #assert base_model_path == config.base_model_name_or_path
-            model = PeftModel.from_pretrained(
-                model, lora_path, torch_dtype=torch.bfloat16, device_map=device_map, config=config
-            )
-            model = model.merge_and_unload()
-            model.train(False)
 
-        if model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
-            model.model.embed_tokens.weight = model.lm_head.weight
+        model = PeftModel.from_pretrained(
+            model, lora_path, torch_dtype=torch.bfloat16, device_map=device_map, config=config
+        )
+
+        if tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save: 
+            print(model.base_model.model.lm_head.original_module.weight[0])
+            print(model.base_model.model.lm_head.modules_to_save['default'].weight[0])
+            with torch.no_grad():
+                delta = model.base_model.model.lm_head.modules_to_save['default'].weight - model.base_model.model.lm_head.original_module.weight
+                delta /= alpha_scale
+                new_embeds = model.base_model.model.lm_head.original_module.weight + delta
+                print(delta.norm())
+                
+        model = model.merge_and_unload()
+        model.train(False)
+        if tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
+            with torch.no_grad():
+                model.lm_head.weight.copy_(new_embeds)
+                model.model.embed_tokens.weight = model.lm_head.weight
+        print(model.model.embed_tokens.weight[0])
+        print(model.lm_head.weight[0])
 
     model.save_pretrained(output_path)
 

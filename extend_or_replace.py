@@ -12,6 +12,8 @@ if __name__ == '__main__':
     parser.add_argument('--extend_tiktoken_tokenizer_path', default='')
     parser.add_argument('--extend_hf_tokenizer_path', default='')
     parser.add_argument('--extend_hf_tokenizer_type', default='')
+    parser.add_argument('--only_ru', action='store_true')
+    parser.add_argument('--filter_numbers', action='store_true')
     args = parser.parse_args()
 
     assert args.op in ['replace', 'extend']
@@ -26,12 +28,17 @@ if __name__ == '__main__':
                          '--output_path', args.output_path])
     elif args.op == 'extend':
         sp_tok_vocab_freq_path = os.path.join(args.output_path, 'sp_tok_vocab_freq.txt')
-        call_res = subprocess.call(
-            ['python', '-m', 'ruadapt.tokenization.convert_hf_tokenizer_vocab_to_freq_list', 
+        
+        
+        call_params = ['python', '-m', 'ruadapt.tokenization.convert_hf_tokenizer_vocab_to_freq_list', 
              '--tokenizer_path', args.extend_hf_tokenizer_path,
              '--output_path', sp_tok_vocab_freq_path,
-             '--type', args.extend_hf_tokenizer_type])
+             '--type', args.extend_hf_tokenizer_type]
         
+        if args.only_ru:
+            call_params.append('--only_ru')
+            
+        call_res = subprocess.call(call_params)
         if call_res != 0:
             print(call_res)
             print('ERROR. Stoping pipeline')
@@ -52,19 +59,22 @@ if __name__ == '__main__':
             print(call_res)
             print('ERROR. Stoping pipeline')
             exit(1)
-        
-        call_res = subprocess.call(
-            ['python', '-m', 'ruadapt.tokenization.expand_tiktoken_save_hf', 
+
+        call_params = ['python', '-m', 'ruadapt.tokenization.expand_tiktoken_save_hf', 
              '--tiktoken_base_path', tiktoken_base_path,
              '--tiktoken_new_path', tokenizer_extended_part_path,
              '--output_dir', os.path.join(args.output_path, 'hf_tokenizer'),
-             '--init_output_from', args.src_model_path])
-        
+             '--init_output_from', args.src_model_path]  
+        if args.filter_numbers:
+            call_params.append('--filter_numbers')
+
+        call_res = subprocess.call(call_params)
+            
         if call_res != 0:
             print(call_res)
             print('ERROR. Stoping pipeline')
             exit(1)
-            
+        
         subprocess.call(
             ['python', '-m', 'ruadapt.tokenization.run_replace_tokenizer', 
              '--model_name_or_path', args.src_model_path,
