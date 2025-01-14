@@ -9,7 +9,9 @@ def if_lora(model_dir):
     adapter_model_exists = os.path.exists(os.path.join(model_dir, 'adapter_model.bin')) or os.path.exists(os.path.join(model_dir, 'adapter_model.safetensors'))
     return adapter_config_exists and adapter_model_exists
 
-def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alpha_scale=1.0):
+def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alpha_scale=1.0, scale_embeds=True):
+    scale_embeds = scale_embeds=='true'
+    print(model_name, output_path, device_map, alpha_scale, scale_embeds, scale_embeds==True)
     if not if_lora(model_name):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         base_model = AutoModelForCausalLM.from_pretrained(
@@ -33,6 +35,8 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
     for name in config.alpha_pattern:
         config.alpha_pattern[name] /= alpha_scale
 
+    if not scale_embeds and 'lm_head' in config.target_modules:
+        config.alpha_pattern["lm_head"] = lm_head_alpha
     #if True:
     #    config.alpha_pattern["lm_head"] = lm_head_alpha
 
@@ -58,7 +62,7 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
         print(lora_model.base_model.model.lm_head.modules_to_save['default'].weight[0])
         with torch.no_grad():
             delta = lora_model.base_model.model.lm_head.modules_to_save['default'].weight - lora_model.base_model.model.lm_head.original_module.weight
-            delta /= alpha_scale
+            delta /= alpha_scale if scale_embeds else 1.0
             new_embeds = lora_model.base_model.model.lm_head.original_module.weight + delta
 
     lora_model = lora_model.merge_and_unload()

@@ -156,7 +156,7 @@ def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=Fal
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=config.torch_dtype,
-            device_map=device_map,
+            device_map=device,
             attn_implementation="sdpa",
         )
         
@@ -210,9 +210,11 @@ if __name__ == "__main__":
     
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
     model.config.vocab_size = len(tokenizer.get_vocab())
     model.generation_config.eos_token_id = tokenizer.eos_token_id
     model.generation_config.bos_token_id = tokenizer.bos_token_id
+    model.generation_config.pad_token_id = tokenizer.pad_token_id
     
     model.save_pretrained(out_dir)
     if args.custom_chat_template_path is not None:
@@ -227,5 +229,5 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
 
     if adapters_path is not None:
-        model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False), device='cuda:0')
+        model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False), device='cuda:1')
         model.save_pretrained(out_dir)
