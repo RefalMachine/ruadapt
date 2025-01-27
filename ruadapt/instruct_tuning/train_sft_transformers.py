@@ -184,7 +184,7 @@ def train(
         for param_name, param in model.model.named_parameters():
             if 'embed_tokens' not in param_name:
                 param.requires_grad = False
-
+    training_args.output_dir = output_dir
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -200,9 +200,9 @@ def train(
     #print(model.model.model.embed_tokens.weight[0])
     #print(model.lm_head.original_module.weight[0])
     #print(model.lm_head.modules_to_save['default'].weight[0])
-    model.save_pretrained(output_dir)
+    #model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
-
+    trainer.save_model()
 
 if __name__ == "__main__":
     fire.Fire(train)

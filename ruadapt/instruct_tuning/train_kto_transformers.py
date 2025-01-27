@@ -183,7 +183,8 @@ def train(
     )
 
     trainer.train()
-    model.save_pretrained(output_dir)
+    #model.save_pretrained(output_dir)
+    trainer.save_model()
 
 
 if __name__ == "__main__":

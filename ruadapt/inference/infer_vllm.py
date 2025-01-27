@@ -9,6 +9,7 @@ import shortuuid
 from .utils import read_jsonl, read_json
 import time
 import os
+import time
 
 # taken from saiga project
 
@@ -41,7 +42,10 @@ def infer_vllm(
         quantization=quantization,
     )
     tokenizer = llm.get_tokenizer()
-    records = read_json(input_path)
+    try:
+        records = read_json(input_path)
+    except:
+        records = read_jsonl(input_path)
     role_mapping = {
         "bot": "assistant",
         "gpt": "assistant",
@@ -49,8 +53,10 @@ def infer_vllm(
     }
     encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
     prompts = []
-    if max_samples > 0:
-        records = records[:max_samples]
+    #if max_samples > 0:
+    #    records = records[:max_samples]
+
+    records_filtered = []
     for r in records:
         if "instruction" in r:
             messages = [{"role": "user", "content": r["instruction"]}]
@@ -63,6 +69,9 @@ def infer_vllm(
                 assert len(messages) == 1
                 messages[i]['role'] = 'user'
 
+        if len([m for m in messages if m['role'] in ['assistant', 'bot']]) > 1:
+            continue
+
         for m in messages:
             m["role"] = role_mapping.get(m["role"], m["role"])
         if messages[-1]["role"] == "assistant":
@@ -73,15 +82,24 @@ def infer_vllm(
         )
         #if remove_bos_token:
         #    prompt = prompt.replace(tokenizer.bos_token, "")
+        if len(prompt) < 2000:
+            prompts.append(prompt)
+            records_filtered.append(r)
 
-        prompts.append(prompt)
+    records = records_filtered
 
+    if max_samples > 0:
+        records = records[:max_samples]
+        prompts = prompts[:max_samples]
+    print(len(records))
     print(prompts[0])
     print(sampling_params)
+    s = time.time()
     outputs = llm.generate(prompt_token_ids=prompts, sampling_params=sampling_params)
     full_results = []
     gen_text_len = []
     with open(output_path, "w") as w:
+        j = 0
         for record, output in zip(records, outputs):
             prompt_token_ids = output.prompt_token_ids
             prompt = tokenizer.decode(output.prompt_token_ids)
@@ -94,12 +112,13 @@ def infer_vllm(
             gen_text_len.append(len(encoding.encode(generated_text, allowed_special=set({'<|endoftext|>'}))))
             choices.append({"index": i, "turns": turns})
             ans = {
-                "question_id": record.get("question_id", record['instruction']),
+                "question_id": record.get("question_id", record['messages']),
                 "answer_id": shortuuid.uuid(),
                 "model_id": os.path.basename(model_name),
                 "choices": choices,
                 "tstamp": time.time(),
             }
+            j += 1
 
             print(prompt)
             print(generated_text)
@@ -123,6 +142,9 @@ def infer_vllm(
         if infer_for == 'alpaca_eval':
             json.dump(full_results, w, ensure_ascii=False, indent=4)
     print('AVERAGE_LEN: ' + str(sum(gen_text_len) / len(gen_text_len)))
+    total_time = time.time() - s
+    print(total_time)
+    print((sum(gen_text_len) / len(gen_text_len)) / total_time)
 
 if __name__ == "__main__":
     fire.Fire(infer_vllm)

@@ -57,7 +57,7 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
         base_model, model_name, torch_dtype=torch.bfloat16, device_map=device_map, config=config
     )
     
-    if base_model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save: 
+    if config.modules_to_save is not None and 'lm_head' in config.modules_to_save: 
         print(lora_model.base_model.model.lm_head.original_module.weight[0])
         print(lora_model.base_model.model.lm_head.modules_to_save['default'].weight[0])
         with torch.no_grad():
@@ -73,10 +73,11 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
     print(lora_model.lm_head.weight[0])
     print(base_model.config.tie_word_embeddings)
     print(config.modules_to_save)
-    if base_model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
+    if config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
         with torch.no_grad():
             lora_model.lm_head.weight.copy_(new_embeds)
-            lora_model.model.embed_tokens.weight = lora_model.lm_head.weight
+            if base_model.config.tie_word_embeddings:
+                lora_model.model.embed_tokens.weight = lora_model.lm_head.weight
 
     print(lora_model.model.embed_tokens.weight[0])
     print(lora_model.lm_head.weight[0])
