@@ -1,11 +1,11 @@
 {
     "trainer": {
         "evaluation_strategy": "steps",
-        "per_device_train_batch_size": 1,
-        "per_device_eval_batch_size": 1,
-        "gradient_accumulation_steps": 64,
+        "per_device_train_batch_size": 2,
+        "per_device_eval_batch_size": 2,
+        "gradient_accumulation_steps": 32,
         "eval_steps": 16,
-        "save_steps": 16,
+        "save_steps": 32,
         "logging_steps": 1,
         "learning_rate": 0.00006,
         "num_train_epochs": 2,
@@ -13,13 +13,13 @@
         "warmup_steps": 16,
         "bf16": true,
         "fp16": false,
-        "optim": "paged_adamw_8bit",
-        "load_best_model_at_end": true,
-        "save_total_limit": 2,
+        "optim": "adamw_torch",
+        "load_best_model_at_end": false,
+        "save_total_limit": 20,
         "seed": 1337,
         "remove_unused_columns": false,
         "max_grad_norm": 0.5,
-        "weight_decay": 0.04,
+        "weight_decay": 0.1,
         "ddp_find_unused_parameters": false
     },
     "lora": {
@@ -33,13 +33,16 @@
         "beta": 0.15,
         "desirable_weight": 1.0,
         "undesirable_weight": 1.0,
-        "max_prompt_length": 6144,
-        "max_completion_length": 6144,
-        "max_length": 6144
+        "max_prompt_length": 2048,
+        "max_completion_length": 2048,
+        "max_length": 2048
     },
-    "gradient_checkpointing": true,
     "load_in_8bit": false,
-    "load_in_4bit": true,
-    "max_seq_length": 6144,
-    "max_tokens_count": 6144
+    "gradient_checkpointing": true,
+    "load_in_4bit": false,
+    "max_seq_length": 2048,
+    "max_tokens_count": 2048,
+    "bos_token": "<|endoftext|>",
+    "eos_token": "<|im_end|>",
+    "pad_token": "<|endoftext|>"
 }

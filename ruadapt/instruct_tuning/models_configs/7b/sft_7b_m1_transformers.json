@@ -7,14 +7,14 @@
         "eval_steps": 16,
         "save_steps": 16,
         "logging_steps": 1,
-        "learning_rate": 0.00005,
+        "learning_rate": 0.00002,
         "num_train_epochs": 2,
         "lr_scheduler_type": "cosine",
         "warmup_steps": 16,
         "bf16": true,
         "fp16": false,
-        "optim": "paged_adamw_8bit",
-        "load_best_model_at_end": true,
+        "optim": "adamw_torch",
+        "load_best_model_at_end": false,
         "save_total_limit": 1,
         "seed": 1337,
         "max_grad_norm": 1.0,
@@ -23,16 +23,16 @@
     },
     "lora": {
         "r": 32,
-        "lora_alpha": 16,
+        "lora_alpha": 64,
         "lora_dropout": 0.0,
         "bias": "none",
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        "modules_to_save": ["lm_head"]
+        "modules_to_save": ["lm_head", "embed_tokens"]
     },
     "load_in_8bit": false,
-    "gradient_checkpointing": true,
-    "load_in_4bit": true,
+    "gradient_checkpointing": false,
+    "load_in_4bit": false,
     "only_target_loss": true,
-    "max_tokens_count": 6144,
-    "max_seq_length": 6144
+    "max_tokens_count": 4096,
+    "max_seq_length": 4096
 }

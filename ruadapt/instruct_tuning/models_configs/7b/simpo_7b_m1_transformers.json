@@ -7,14 +7,14 @@
         "eval_steps": 16,
         "save_steps": 16,
         "logging_steps": 1,
-        "learning_rate": 0.000005,
+        "learning_rate": 0.000015,
         "num_train_epochs": 2,
         "lr_scheduler_type": "cosine",
         "warmup_steps": 16,
         "bf16": true,
         "fp16": false,
-        "optim": "paged_adamw_8bit",
-        "load_best_model_at_end": true,
+        "optim": "adamw_torch",
+        "load_best_model_at_end": false,
         "save_total_limit": 2,
         "seed": 1337,
         "remove_unused_columns": false,
@@ -23,8 +23,8 @@
         "ddp_find_unused_parameters": false
     },
     "lora": {
-        "r": 128,
-        "lora_alpha": 32,
+        "r": 64,
+        "lora_alpha": 16,
         "lora_dropout": 0.0,
         "bias": "none",
         "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -34,13 +34,16 @@
         "cpo_alpha": 0,
         "beta": 2.5,
         "simpo_gamma": 0.6,
-        "max_prompt_length": 6144,
-        "max_completion_length": 6144,
-        "max_length": 6144
+        "max_prompt_length": 2048,
+        "max_completion_length": 2048,
+        "max_length": 2048
     },
-    "gradient_checkpointing": true,
+    "gradient_checkpointing": false,
     "load_in_8bit": false,
-    "load_in_4bit": true,
-    "max_seq_length": 6144,
-    "max_tokens_count": 6144
+    "load_in_4bit": false,
+    "max_seq_length": 2048,
+    "max_tokens_count": 2048,
+    "bos_token": "<|endoftext|>",
+    "eos_token": "<|im_end|>",
+    "pad_token": "<|endoftext|>"
 }
