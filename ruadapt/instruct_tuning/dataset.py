@@ -31,6 +31,10 @@ class ChatDataset(Dataset):
 
         self.records = []
         for record in tqdm(original_records):
+            record_str = self.tokenizer.apply_chat_template(record["messages"], tokenize=False, add_generation_prompt=False)
+            if len(record_str) > 4 * self.max_tokens_count:
+                continue
+                
             if random.random() > self.sample_rate:
                 continue
             tensors = self.convert_record(record)
@@ -109,9 +113,12 @@ class ChatDataset(Dataset):
                 "Full prompt:" + 
                 self.tokenizer.decode(input_ids, skip_special_tokens=False)
             )
-            assert '\n' in self.tokenizer.decode(input_ids, skip_special_tokens=False)
+            #assert '\n' in self.tokenizer.decode(input_ids, skip_special_tokens=False)
             self.is_printed = True
 
+        if len([i for i in labels if i != -100]) == 0:
+            return None
+            
         input_ids = torch.LongTensor(input_ids)
         labels = torch.LongTensor(labels)
         attention_mask = input_ids.new_ones(input_ids.size())

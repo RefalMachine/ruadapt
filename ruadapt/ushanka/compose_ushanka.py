@@ -150,7 +150,7 @@ def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=Fal
     if check_if_lora(model_path):
         embeds_path, adapters_path = save_split_lora(model_path, out_dir)
         model_path = embeds_path
-        model = load_lora(model_path, None, alpha_scale, not_scale_lm_head)
+        model = load_lora(model_path, None, alpha_scale, not_scale_lm_head, device=device)
     else:
         config = AutoConfig.from_pretrained(model_path)
         model = AutoModelForCausalLM.from_pretrained(
@@ -189,11 +189,11 @@ if __name__ == "__main__":
           sep='\n'
          )
     
-    target_model, target_model_tokenizer = load_model(config_dict["target_model_path"], device="cpu")
-    source_model, source_model_tokenizer = load_model(config_dict["source_model_path"], device="cpu")
+    target_model, target_model_tokenizer = load_model(config_dict["target_model_path"], device="cuda:0")
+    source_model, source_model_tokenizer = load_model(config_dict["source_model_path"], device="cuda:1")
     donor_model, donor_model_tokenizer, adapters_path = load_donor_model(
         config_dict["donor_model_path"], out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False),
-        device='cuda:0'
+        device='cuda:2'
     )
     
     proj_modes = {"lm_head": args.mode,
@@ -229,5 +229,5 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
 
     if adapters_path is not None:
-        model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False), device='cuda:1')
+        model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False), device='cuda:3')
         model.save_pretrained(out_dir)

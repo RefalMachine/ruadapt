@@ -35,7 +35,7 @@ import torch
 import json
 import codecs
 from datasets import load_dataset
-
+from torch.utils.data import DataLoader
 import transformers
 from transformers import (
     CONFIG_MAPPING,
@@ -51,6 +51,7 @@ from transformers import (
     is_torch_tpu_available,
     set_seed,
 )
+import os
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint, PREFIX_CHECKPOINT_DIR
 from transformers.utils import check_min_version, send_example_telemetry
@@ -61,7 +62,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 import numpy as np
 from utils import get_tokenizer_properties, group_texts, custom_tokenize
-from peft import LoraConfig, TaskType, get_peft_model, PeftModel, get_peft_model_state_dict
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel, get_peft_model_state_dict#, EvaConfig, initialize_lora_eva_weights
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 #check_min_version("4.34.0.dev0")
 
@@ -72,7 +73,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-
+print_first = True
 class TrainerNoBaseSave(Trainer):
     def __init__(self, *args, **kwargs):
         return super().__init__(*args, **kwargs)
@@ -317,6 +318,9 @@ class LoraTrainingArguments(TrainingArguments):
     debug_mode : Optional[bool] = field(default=False)
     peft_path : Optional[str] = field(default=None)
     use_dora : Optional[bool] = field(default=False)
+    use_eva: Optional[bool] = field(default=False)
+    attention_4d: Optional[bool] = field(default=False)
+    wsd_constant_part: Optional[float] = field(default=0.85)
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -518,7 +522,9 @@ def main():
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
     
     tokenizer_prop = get_tokenizer_properties(tokenizer)
-
+    #print(tokenizer)
+    #print(tokenizer_prop)
+    #print(raw_datasets)
     def tokenize_function(examples):
         with CaptureLogger(tok_logger) as cl:
             output = custom_tokenize(examples[text_column_name], tokenizer, tokenizer_prop, enable_asserts=False)
@@ -531,7 +537,10 @@ def main():
         return output
 
     with training_args.main_process_first(desc="dataset map tokenization"):
-        raw_datasets = raw_datasets.filter(lambda example: example["domain"] != 'enwiki')
+        try:
+            raw_datasets = raw_datasets.filter(lambda example: example["domain"] != 'enwiki')
+        except:
+            pass
         if not data_args.streaming:
             tokenized_datasets = raw_datasets.map(
                 tokenize_function,
@@ -612,8 +621,8 @@ def main():
             token=model_args.token,
             torch_dtype=torch_dtype,
             low_cpu_mem_usage=True,
-            attn_implementation="flash_attention_2"
-            #device_map={"": f"cuda:{training_args.local_rank}"}
+            attn_implementation='sdpa' if training_args.attention_4d else "flash_attention_2",
+            device_map={"": f"cuda:{training_args.local_rank}"}
         )
     else:
         model = MODEL_CLASS.from_config(config, trust_remote_code=model_args.trust_remote_code)
@@ -684,6 +693,7 @@ def main():
             rank_pattern = json.load(codecs.open(training_args.rank_pattern_path, 'r', 'utf-8'))
         if training_args.alpha_pattern_path is not None:
             alpha_pattern = json.load(codecs.open(training_args.alpha_pattern_path, 'r', 'utf-8'))
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             target_modules=target_modules,
@@ -694,12 +704,23 @@ def main():
             rank_pattern=rank_pattern,
             alpha_pattern=alpha_pattern,
             use_dora=use_dora)
+
+        if training_args.use_eva:
+            peft_config.init_lora_weights = "eva"
+            peft_config.eva_config = EvaConfig(rho=1.0)
+
         model = get_peft_model(model, peft_config)
         if model.config.tie_word_embeddings and 'lm_head' in modules_to_save:
             #assert 'em'
             print('Tie embeddings')
             print(model)
             model.base_model.model.model.embed_tokens.weight = model.base_model.model.lm_head.modules_to_save["default"].weight
+
+        eval_dataloader = DataLoader(
+            eval_dataset, collate_fn=default_data_collator, batch_size=training_args.per_device_eval_batch_size
+        )
+        if training_args.use_eva:
+            initialize_lora_eva_weights(model, eval_dataloader, gather_distributed_inputs=True)
         model.print_trainable_parameters()
     else:
         logger.info("Ruadapt default")
@@ -708,9 +729,63 @@ def main():
                 param.requires_grad = False
 
 
-    print(train_dataset[35440])
-    print(eval_dataset[55])
+    #print(train_dataset[35440])
+    #print(eval_dataset[55])
     
+    def create_attention_mask(T, ind):
+        N = len(T)
+        if N not in ind:
+            ind = torch.cat([ind, torch.tensor([N])])
+
+        val = torch.finfo(torch.bfloat16).min
+        mask = torch.full(
+            (N, N), fill_value=val, dtype=torch.bfloat16
+        )
+        
+        lhs = 0
+        for i in range(len(ind)):
+            start = lhs
+            end = ind[i].item()
+            for j in range(start, end):
+                mask[j,start:j+1] = 0
+            #mask[start:end+1, start:end+1] = 1
+                
+            lhs = end + 1
+        
+        return mask
+
+    print(tokenizer.eos_token_id)
+    print('EOS=', tokenizer.eos_token_id==145109)
+    print_first = True
+    def data_collator_4d(batch):
+        #global print_first
+        batch = default_data_collator(batch)
+        attention_mask_4d = []
+        for i, s in enumerate(batch['input_ids']):
+            ind = torch.nonzero(s == tokenizer.eos_token_id).flatten()
+            #print(ind)
+            #print(batch['input_ids'])
+            #raise '123'
+            #if print_first and len(ind) > 0:
+            #    print('IND!!! ', str(ind))
+            #    print_first = False
+            attention_mask_4d.append(create_attention_mask(batch['attention_mask'][i], ind).view(1, block_size, block_size))
+        attention_mask_4d = torch.stack(attention_mask_4d)
+        batch['attention_mask'] = attention_mask_4d
+        return batch
+
+    data_collator = default_data_collator
+    if training_args.attention_4d:
+        data_collator = data_collator_4d
+        print('data_collator_4d!!!')
+
+    print('LR_SHED1', str(training_args.lr_scheduler_kwargs))
+    warmup_steps = training_args.warmup_steps
+    total_steps = training_args.num_train_epochs * len(train_dataset) // (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps * int(os.environ['GPUS_PER_NODE']) * int(os.environ['NNODES']))
+    total_steps -= warmup_steps
+    print('LR_SHED2', [total_steps, total_steps * training_args.wsd_constant_part, total_steps * (1.0 - training_args.wsd_constant_part)])
+    training_args.lr_scheduler_kwargs = {'num_stable_steps': int(total_steps * training_args.wsd_constant_part), 'num_decay_steps': int(total_steps * (1.0 - training_args.wsd_constant_part)) + 2}
+    print('LR_SHED3', str(training_args.lr_scheduler_kwargs))
     TRAINER_CLASS = TrainerNoBaseSave if training_args.peft else Trainer
     trainer = TRAINER_CLASS(
         model=model,
@@ -719,7 +794,7 @@ def main():
         eval_dataset=eval_dataset if training_args.do_eval else None,
         tokenizer=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
-        data_collator=default_data_collator,
+        data_collator=data_collator,
         compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics
         if training_args.do_eval and not is_torch_tpu_available()

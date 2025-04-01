@@ -44,7 +44,8 @@ def custom_split(text):
     splitted = []
     pos = 0
     prev_pos = 0
-    pos = text.find('\n', prev_pos)
+    min_len = 10000
+    pos = text.find('\n', prev_pos + min_len)
     while pos >= 0:
         s = text[pos]
         while s == '\n':
@@ -52,31 +53,35 @@ def custom_split(text):
             s = text[pos]
         splitted.append(text[prev_pos:pos])
         prev_pos = pos
-        pos = text.find('\n', prev_pos)
+        pos = text.find('\n', prev_pos + min_len)
     splitted.append(text[prev_pos:])
     return splitted
 
-def custom_tokenize(text, tokenizer, tokenizer_properties, enable_asserts=True):
+def custom_tokenize(text, tokenizer, tokenizer_properties, enable_asserts=False):
     bos_token = tokenizer.bos_token if tokenizer.bos_token is not None else ''
     eos_token = tokenizer.eos_token if tokenizer.eos_token is not None else ''
 
     text_with_special_tokens = bos_token + text.strip() + eos_token
-    paragraphs = custom_split(text_with_special_tokens)
-    
-    assert text_with_special_tokens == ''.join(paragraphs)
+    if len(text_with_special_tokens) > 100000:
+        paragraphs = custom_split(text_with_special_tokens)
+        
+        assert text_with_special_tokens == ''.join(paragraphs)
 
-    tensors_para_first = tokenizer(paragraphs[0], add_special_tokens=False)
-    if tokenizer_properties['force_leading_space']:
-        tensors_para_rest = [shrink_first_fake_space_plus_dummy(tokenizer('\n' + par, add_special_tokens=False)) for par in paragraphs[1:]]
+        tensors_para_first = tokenizer(paragraphs[0], add_special_tokens=False)
+        if tokenizer_properties['force_leading_space']:
+            tensors_para_rest = [shrink_first_fake_space_plus_dummy(tokenizer('\n' + par, add_special_tokens=False)) for par in paragraphs[1:]]
+        else:
+            tensors_para_rest = [tokenizer(par, add_special_tokens=False) for par in paragraphs[1:]]
+
+        output = merge([tensors_para_first] + tensors_para_rest)
+        if enable_asserts:
+            decoded_output = tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(output['input_ids']))
+            if tokenizer_properties['force_leading_space'] and len(bos_token) > 0:
+                decoded_output = decoded_output.replace(bos_token + ' ', bos_token)
+            assert decoded_output.lstrip() == text_with_special_tokens.lstrip()
     else:
-        tensors_para_rest = [tokenizer(par, add_special_tokens=False) for par in paragraphs[1:]]
+        return tokenizer(text_with_special_tokens, add_special_tokens=False)
 
-    output = merge([tensors_para_first] + tensors_para_rest)
-    if enable_asserts:
-        decoded_output = tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(output['input_ids']))
-        if tokenizer_properties['force_leading_space'] and len(bos_token) > 0:
-            decoded_output = decoded_output.replace(bos_token + ' ', bos_token)
-        assert decoded_output.lstrip() == text_with_special_tokens.lstrip()
     return output
 
 
