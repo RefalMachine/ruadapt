@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from tqdm import tqdm
-
+import random
 
 class ChatDataset(Dataset):
     def __init__(
@@ -18,6 +18,7 @@ class ChatDataset(Dataset):
         add_global_bos: bool = True,
         add_global_eos: bool = True,
         labels_pad_token_id: int = -100,
+        shuffle=False
     ):
         self.original_records = original_records
         self.sample_rate = sample_rate
@@ -41,7 +42,10 @@ class ChatDataset(Dataset):
             if tensors is None:
                 continue
             self.records.append(tensors)
-
+        
+        if shuffle:
+            random.shuffle(self.records)
+            
     def __len__(self):
         return len(self.records)
 

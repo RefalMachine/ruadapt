@@ -22,13 +22,16 @@ def check_op(func):
         op_hash = hash(func, args, kwargs)
         if op_hash in info:
             return info[op_hash]
-        
+        else:
+            print(op_hash)
+            print(op_hash in info)
+            print(info)
         returned_value = func(*args, **kwargs)
         if returned_value:
             return returned_value
         info[op_hash] = returned_value
         with codecs.open(HASH_PATH, 'w', 'utf-8') as file:
-            json.dump(info, file)
+            json.dump(info, file, indent=4)
 
         return returned_value
         
@@ -96,6 +99,10 @@ def create_step_config(step_idx, step, model_name_or_path, output_dir, special_t
     if num_gpu > 1:
         step_config['trainer']['gradient_accumulation_steps'] = max(1, int(step_config['trainer']['gradient_accumulation_steps'] / num_gpu))
 
+    if 'evaluation_strategy' in step_config['trainer']:
+        step_config['trainer']['eval_strategy'] = step_config['trainer']['evaluation_strategy']
+        del step_config['trainer']['evaluation_strategy']
+        
     step_config_path = os.path.join(step_model_path, 'step_config.json')
     with codecs.open(step_config_path, 'w', 'utf-8') as file:
         json.dump(step_config, file, ensure_ascii=False, indent=4)
@@ -148,16 +155,16 @@ def run_merge_model(lora_model_path, alpha_scale=1.0):
     )
 
 @check_op
-def run_lep(lep_model_path, lep_config_path, custom_chat_template_path):
+def run_lep(lep_model_path, lep_config_path, custom_chat_template_path, mode='conversion'):
     print(f'LEP to {lep_model_path}')
     my_env = os.environ.copy()
-    my_env["CUDA_VISIBLE_DEVICES"] = "0,1"
+    my_env["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
     return subprocess.call(
         [
             'python', '-m', 'ruadapt.ushanka.compose_ushanka', 
             '--config_path', lep_config_path,
             '--output_path', lep_model_path,
-            '--mode', 'conversion',
+            '--mode', mode,
             '--custom_chat_template_path', custom_chat_template_path
         ], env=my_env
     )
@@ -264,8 +271,9 @@ if __name__ == '__main__':
             args.alpha_scale,
             args.not_scale_lm_head
         )
-
-        if run_lep(lep_model_path, lep_config_path, args.custom_chat_template_path):
+        mode = args.mode if 'mode' in args else 'conversion'
+        print(f'LEP MODE {mode}')
+        if run_lep(lep_model_path, lep_config_path, args.custom_chat_template_path, mode=mode):
             print('ERROR while LEP. Stoping pipeline.')
             exit(1)
         

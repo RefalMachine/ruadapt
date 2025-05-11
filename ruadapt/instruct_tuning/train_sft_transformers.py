@@ -121,7 +121,8 @@ def train(
                 sample_rate=sample_rate,
                 only_target_loss=only_target_loss,
                 add_global_eos=False,
-                add_global_bos=False
+                add_global_bos=False,
+                shuffle=True
             )
         )
     train_dataset, val_dataset = datasets
@@ -174,12 +175,15 @@ def train(
 
     if lora_config:
         lora_config = LoraConfig(**lora_config)
+        if model.config.tie_word_embeddings and 'lm_head' in config['lora']['modules_to_save']:
+            if 'embed_tokens' in config['lora']['modules_to_save']:
+                lora_config.modules_to_save = ['lm_head']
+                config['lora']['modules_to_save'] = ['lm_head']
+                print('ATTENTION!!!', str(lora_config.modules_to_save))
+
         model = get_peft_model(model, lora_config)
         if model.config.tie_word_embeddings and 'lm_head' in config['lora']['modules_to_save']:
-            print('Tie embeddings')
-            print(model)
             model.base_model.model.model.embed_tokens.weight = model.base_model.model.lm_head.modules_to_save["default"].weight
-
     else:
         for param_name, param in model.model.named_parameters():
             if 'embed_tokens' not in param_name:

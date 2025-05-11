@@ -18,9 +18,9 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
             model_name,
             load_in_8bit=False,
             torch_dtype=torch.bfloat16,
-            device_map=device_map,
+            device_map='cpu',
         )
-
+        print(base_model)
         base_model.save_pretrained(output_path)
         tokenizer.save_pretrained(output_path)
         return 
@@ -50,11 +50,12 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
         base_model_path,
         load_in_8bit=False,
         torch_dtype=torch.bfloat16,
-        device_map=device_map,
+        device_map='cpu',
     )
 
+    print(config)
     lora_model = PeftModel.from_pretrained(
-        base_model, model_name, torch_dtype=torch.bfloat16, device_map=device_map, config=config
+        base_model, model_name, torch_dtype=torch.bfloat16, device_map='cpu', config=config
     )
     
     if config.modules_to_save is not None and 'lm_head' in config.modules_to_save: 

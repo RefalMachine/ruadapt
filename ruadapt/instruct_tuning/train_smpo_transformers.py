@@ -3,6 +3,30 @@ import random
 import fire
 from typing import List, Dict
 
+import numpy as np
+import torch
+from tqdm import tqdm
+from torch.utils.data import Dataset
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    AutoConfig,
+    TrainingArguments,
+    Trainer,
+)
+from peft import LoraConfig, get_peft_model
+from datasets import Dataset as HFDataset
+
+from .smpo_trainer import SimpleMarginPOConfig, SimpleMarginPOTrainer
+from .dpo_dataset import DPODataset
+from .utils import read_jsonl
+import os
+
+import json
+import random
+import fire
+from typing import List, Dict
+
 #import wandb
 import numpy as np
 import torch
@@ -26,55 +50,6 @@ from .utils import read_jsonl
 import os
 import codecs
 
-os.environ["WANDB_DISABLED"] = "true"
-
-class ChatCPODataset(Dataset):
-    def __init__(
-        self,
-        original_records: List[Dict],
-        tokenizer: AutoTokenizer,
-        max_tokens_count: int,
-        sample_rate: float = 1.0,
-    ):
-        self.original_records = original_records
-        self.tokenizer = tokenizer
-        self.max_tokens_count = max_tokens_count
-        self.sample_rate = sample_rate
-
-        self.records = []
-        for record in tqdm(original_records):
-            if random.random() > self.sample_rate:
-                continue
-
-            prompt_messages = record["prompt"]
-            prompt = self.tokenizer.apply_chat_template(
-                prompt_messages, add_generation_prompt=True, tokenize=False
-            )
-            prompt = prompt.replace(self.tokenizer.bos_token, "")
-
-            prompt_tokens = self.tokenizer.apply_chat_template(
-                prompt_messages, add_generation_prompt=True, tokenize=True
-            )
-            chosen = record["chosen"][0]["content"]
-            chosen_tokens = self.tokenizer(chosen)["input_ids"]
-
-            rejected = record["rejected"][0]["content"]
-            rejected_tokens = self.tokenizer(rejected)["input_ids"]
-
-            if len(prompt_tokens) + len(chosen_tokens) > self.max_tokens_count - 10:
-                continue
-            if len(prompt_tokens) + len(rejected_tokens) > self.max_tokens_count - 10:
-                continue
-
-            self.records.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
-
-    def __len__(self):
-        return len(self.records)
-
-    def __getitem__(self, index):
-        return self.records[index]
-
-
 def train(
     config_file: str,
     train_path: str,
@@ -92,15 +67,7 @@ def train(
     max_tokens_count = config["max_tokens_count"]
     max_seq_length = config.get("max_seq_length", max_tokens_count)
     model_name = config["model_name"]
-    '''
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_name,
-        max_seq_length=max_seq_length,
-        dtype=torch.bfloat16,
-        load_in_8bit=config["load_in_8bit"],
-        load_in_4bit=config["load_in_4bit"],
-        attn_implementation="flash_attention_2",
-    )'''
+
     bnb_config = None
     if config['load_in_4bit']:
         bnb_config = BitsAndBytesConfig(
@@ -154,41 +121,42 @@ def train(
             model.base_model.model.model.embed_tokens.weight = model.base_model.model.lm_head.modules_to_save["default"].weight
 
     train_records = read_jsonl(train_path)
-    train_dataset = ChatCPODataset(
+    train_dataset = DPODataset(
         train_records,
         tokenizer=tokenizer,
         max_tokens_count=max_tokens_count,
         sample_rate=sample_rate,
+        apply_chat_template=True,
     )
     train_dataset = HFDataset.from_list(train_dataset)
     eval_records = read_jsonl(eval_path)
-    eval_dataset = ChatCPODataset(
+    eval_dataset = DPODataset(
         eval_records,
         tokenizer=tokenizer,
         max_tokens_count=max_tokens_count,
         sample_rate=sample_rate,
+        apply_chat_template=True,
     )
     eval_dataset = HFDataset.from_list(eval_dataset)
     print(train_dataset[0])
 
     trainer_config = config.get("trainer")
     #if trainer_config.get("report_to", "wandb") == "wandb":
-    #    wandb.init(project="ruadapt", name=config_file)
+    #    wandb.init(project="rulm_self_instruct", name=config_file)
 
-    training_args = CPOConfig(
-        output_dir=output_dir, **config["cpo"], **trainer_config
+    training_args = SimpleMarginPOConfig(
+        output_dir=output_dir, report_to="tensorboard", **config["smpo"], **trainer_config
     )
 
-    trainer = CPOTrainer(
+    trainer = SimpleMarginPOTrainer(
         model=model,
         args=training_args,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
     )
 
     trainer.train()
-    #model.save_pretrained(output_dir)
     trainer.save_model()
 
 

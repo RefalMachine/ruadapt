@@ -59,7 +59,7 @@ def load_prune_save_lora(model_path, key_filter):
     config['target_modules'] = [k for k in config['target_modules'] if key_filter(k)]
 
     if len(config['target_modules']) == 0:
-        config['target_modules'] = None
+        config['target_modules'] = 'dummy-target-modules'
         
     if config['modules_to_save']  is None or len(config['modules_to_save']) == 0:
         config['modules_to_save'] = None
@@ -105,6 +105,7 @@ def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_he
     base_model_config = AutoConfig.from_pretrained(config.base_model_name_or_path)
     torch_dtype = base_model_config.torch_dtype
     base_model_path = config.base_model_name_or_path if base_model_path is None else base_model_path
+    print(config)
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=torch_dtype,
@@ -175,6 +176,8 @@ if __name__ == "__main__":
     parser.add_argument("--custom_chat_template_path", type=str, default=None)
     args = parser.parse_args()
     
+    print(f'LEP MODE USHANKA {args.mode}')
+
     out_dir = Path(args.output_path)
     out_dir.mkdir(exist_ok=True)
     

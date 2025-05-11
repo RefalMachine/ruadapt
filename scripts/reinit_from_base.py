@@ -34,10 +34,12 @@ def reinit_from_base(dst_model_path, src_model_path, out_model_path, tiktoken_ex
 
     #print(dst_model.lm_head.weight[50000])
     #print(dst_model.model.embed_tokens.weight[min(new_idx)])
+    print(dst_model)
+    print(src_model)
     with torch.no_grad():
         dst_model.model.embed_tokens.weight.data[old_idx] = src_model.model.embed_tokens.weight.data[old_idx]
         if not dst_model.config.tie_word_embeddings:
-            dst_model.lm_head.weight.data[old_idx] = src_model.model.lm_head.weight.data[old_idx]
+            dst_model.lm_head.weight.data[old_idx] = src_model.lm_head.weight.data[old_idx]
 
     for idx in [0, 10000, 50000, 100000, 120000]:
         print(idx)

@@ -3,11 +3,22 @@ import os
 import random
 import torch
 import numpy as np
+from tqdm import tqdm 
 import re
 
 def read_jsonl(file_name):
     with open(file_name, encoding="utf-8") as r:
-        return [json.loads(line) for line in r]
+        data = [l for l in r]
+    for i in tqdm(range(len(data))):
+        try:
+            data[i] = json.loads(data[i])
+        except:
+            print(data[i])
+            data[i] = ''
+            continue
+    print(len(data))
+    print(len([d for d in data if len(d) > 0]))
+    return [d for d in data if len(d) > 0]
 
 def read_json(file_name):
     with open(file_name, encoding="utf-8") as r:

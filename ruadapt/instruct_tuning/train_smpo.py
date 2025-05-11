@@ -16,58 +16,12 @@ from transformers import (
     Trainer,
 )
 from peft import LoraConfig, get_peft_model
-from trl import CPOConfig, CPOTrainer
 from datasets import Dataset as HFDataset
 from unsloth import PatchDPOTrainer, FastLanguageModel
 
-from .utils import read_jsonl
-
-
-class ChatCPODataset(Dataset):
-    def __init__(
-        self,
-        original_records: List[Dict],
-        tokenizer: AutoTokenizer,
-        max_tokens_count: int,
-        sample_rate: float = 1.0,
-    ):
-        self.original_records = original_records
-        self.tokenizer = tokenizer
-        self.max_tokens_count = max_tokens_count
-        self.sample_rate = sample_rate
-
-        self.records = []
-        for record in tqdm(original_records):
-            if random.random() > self.sample_rate:
-                continue
-
-            prompt_messages = record["prompt"]
-            prompt = self.tokenizer.apply_chat_template(
-                prompt_messages, add_generation_prompt=True, tokenize=False
-            )
-            prompt = prompt.replace(self.tokenizer.bos_token, "")
-
-            prompt_tokens = self.tokenizer.apply_chat_template(
-                prompt_messages, add_generation_prompt=True, tokenize=True
-            )
-            chosen = record["chosen"][0]["content"]
-            chosen_tokens = self.tokenizer(chosen)["input_ids"]
-
-            rejected = record["rejected"][0]["content"]
-            rejected_tokens = self.tokenizer(rejected)["input_ids"]
-
-            if len(prompt_tokens) + len(chosen_tokens) > self.max_tokens_count - 10:
-                continue
-            if len(prompt_tokens) + len(rejected_tokens) > self.max_tokens_count - 10:
-                continue
-
-            self.records.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
-
-    def __len__(self):
-        return len(self.records)
-
-    def __getitem__(self, index):
-        return self.records[index]
+from src.smpo_trainer import SimpleMarginPOConfig, SimpleMarginPOTrainer
+from src.dpo_dataset import DPODataset
+from src.util.io import read_jsonl
 
 
 def train(
@@ -92,7 +46,6 @@ def train(
         load_in_4bit=config["load_in_4bit"],
         attn_implementation="flash_attention_2",
     )
-    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
     tokenizer.pad_token = config["pad_token"]
     tokenizer.eos_token = config["eos_token"]
     tokenizer.bos_token = config["bos_token"]
@@ -106,32 +59,34 @@ def train(
         )
 
     train_records = read_jsonl(train_path)
-    train_dataset = ChatCPODataset(
+    train_dataset = DPODataset(
         train_records,
         tokenizer=tokenizer,
         max_tokens_count=max_tokens_count,
         sample_rate=sample_rate,
+        apply_chat_template=True,
     )
     train_dataset = HFDataset.from_list(train_dataset)
     eval_records = read_jsonl(eval_path)
-    eval_dataset = ChatCPODataset(
+    eval_dataset = DPODataset(
         eval_records,
         tokenizer=tokenizer,
         max_tokens_count=max_tokens_count,
         sample_rate=sample_rate,
+        apply_chat_template=True,
     )
     eval_dataset = HFDataset.from_list(eval_dataset)
     print(train_dataset[0])
 
     trainer_config = config.get("trainer")
     if trainer_config.get("report_to", "wandb") == "wandb":
-        wandb.init(project="ruadapt", name=config_file)
+        wandb.init(project="rulm_self_instruct", name=config_file)
 
-    training_args = CPOConfig(
-        output_dir=output_dir, report_to="wandb", **config["cpo"], **trainer_config
+    training_args = SimpleMarginPOConfig(
+        output_dir=output_dir, report_to="wandb", **config["smpo"], **trainer_config
     )
-    #training_args.output_dir = output_dir
-    trainer = CPOTrainer(
+
+    trainer = SimpleMarginPOTrainer(
         model=model,
         args=training_args,
         tokenizer=tokenizer,
@@ -140,8 +95,7 @@ def train(
     )
 
     trainer.train()
-    trainer.sabe
-    model.save_pretrained(output_dir)
+    trainer.save_model()
 
 
 if __name__ == "__main__":

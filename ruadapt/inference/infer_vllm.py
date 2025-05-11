@@ -26,7 +26,8 @@ def infer_vllm(
     remove_bos_token: bool = False,
     quantization: Optional[str] = None,
     infer_for: str = 'default',
-    max_samples: int = -1
+    max_samples: int = -1,
+    add_no_think=False
 ):
     sampling_params = SamplingParams(
         temperature=temperature,
@@ -57,11 +58,20 @@ def infer_vllm(
     #    records = records[:max_samples]
 
     records_filtered = []
+    record_key = ''
     for r in records:
         if "instruction" in r:
             messages = [{"role": "user", "content": r["instruction"]}]
-        elif "messages" in r or "prompt" in r or 'turns' in r:
+            record_key = 'instruction'
+        elif "messages" in r:
             messages = r.get("messages", r.get("prompt", r.get('turns')))
+            record_key = 'messages'
+        elif "prompt" in r or 'turns' in r:
+            messages = r.get("messages", r.get("prompt", r.get('turns')))
+            record_key = 'prompt'
+        elif 'turns' in r:
+            messages = r.get("messages", r.get("prompt", r.get('turns')))
+            record_key = 'turns'
 
         assert messages
         for i in range(len(messages)):
@@ -77,9 +87,16 @@ def infer_vllm(
         if messages[-1]["role"] == "assistant":
             messages = messages[:-1]
 
-        prompt = tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True
-        )
+        #if add_no_think:
+        #    messages[-1]['content'] += ' /no_think'
+        if add_no_think:
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True, enable_thinking=False
+            )
+        else:
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True
+            )
         #if remove_bos_token:
         #    prompt = prompt.replace(tokenizer.bos_token, "")
         if len(prompt) < 2000:
@@ -112,7 +129,7 @@ def infer_vllm(
             gen_text_len.append(len(encoding.encode(generated_text, allowed_special=set({'<|endoftext|>'}))))
             choices.append({"index": i, "turns": turns})
             ans = {
-                "question_id": record.get("question_id", record['messages']),
+                "question_id": record.get("question_id", record[record_key]),
                 "answer_id": shortuuid.uuid(),
                 "model_id": os.path.basename(model_name),
                 "choices": choices,

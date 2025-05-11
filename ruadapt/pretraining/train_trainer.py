@@ -48,9 +48,11 @@ from transformers import (
     Trainer,
     TrainingArguments,
     default_data_collator,
-    is_torch_tpu_available,
     set_seed,
+    is_torch_xla_available
 )
+
+
 import os
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint, PREFIX_CHECKPOINT_DIR
@@ -111,7 +113,7 @@ class SavePeftModelCallback(transformers.TrainerCallback):
 
         peft_model_path = os.path.join(checkpoint_folder, "pt_lora_model")
         kwargs["model"].save_pretrained(peft_model_path)
-        kwargs["tokenizer"].save_pretrained(peft_model_path)
+        kwargs.get("tokenizer", kwargs["processing_class"]).save_pretrained(peft_model_path)
 
     def on_save(self, args, state, control, **kwargs):
         self.save_model(args, state, kwargs)
@@ -120,7 +122,7 @@ class SavePeftModelCallback(transformers.TrainerCallback):
     def on_train_end(self, args, state, control, **kwargs):
         peft_model_path = os.path.join(args.output_dir, "pt_lora_model")
         kwargs["model"].save_pretrained(peft_model_path)
-        kwargs["tokenizer"].save_pretrained(peft_model_path)
+        kwargs.get("tokenizer", kwargs["processing_class"]).save_pretrained(peft_model_path)
         
 
 @dataclass
@@ -731,7 +733,7 @@ def main():
 
     #print(train_dataset[35440])
     #print(eval_dataset[55])
-    
+    print(train_dataset)
     def create_attention_mask(T, ind):
         N = len(T)
         if N not in ind:
@@ -781,7 +783,7 @@ def main():
 
     print('LR_SHED1', str(training_args.lr_scheduler_kwargs))
     warmup_steps = training_args.warmup_steps
-    total_steps = training_args.num_train_epochs * len(train_dataset) // (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps * int(os.environ['GPUS_PER_NODE']) * int(os.environ['NNODES']))
+    total_steps = int(training_args.num_train_epochs * len(train_dataset) // (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps * int(os.environ['GPUS_PER_NODE']) * int(os.environ['NNODES'])))
     total_steps -= warmup_steps
     print('LR_SHED2', [total_steps, total_steps * training_args.wsd_constant_part, total_steps * (1.0 - training_args.wsd_constant_part)])
     training_args.lr_scheduler_kwargs = {'num_stable_steps': int(total_steps * training_args.wsd_constant_part), 'num_decay_steps': int(total_steps * (1.0 - training_args.wsd_constant_part)) + 2}
@@ -795,9 +797,9 @@ def main():
         tokenizer=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=data_collator,
-        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
+        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_xla_available() else None,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics
-        if training_args.do_eval and not is_torch_tpu_available()
+        if training_args.do_eval and not is_torch_xla_available()
         else None,
     )
 
