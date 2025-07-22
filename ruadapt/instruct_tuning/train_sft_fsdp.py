@@ -25,7 +25,6 @@ from transformers import (
 from peft import get_peft_model, LoraConfig
 
 # Импорты из ruadapt
-from .hf_dataset import HFChatDataset
 from .utils import set_random_seed, read_jsonl
 import codecs
 from transformers import TrainerCallback, TrainingArguments, TrainerState, TrainerControl, Trainer
