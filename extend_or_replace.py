@@ -14,6 +14,9 @@ if __name__ == '__main__':
     parser.add_argument('--extend_hf_tokenizer_type', default='')
     parser.add_argument('--only_ru', action='store_true')
     parser.add_argument('--filter_numbers', action='store_true')
+    parser.add_argument('--custom_tokens_path', default=None)
+    parser.add_argument('--init_mode', default='mean')
+    parser.add_argument('--mult', default=1.0, type=float)
     args = parser.parse_args()
 
     assert args.op in ['replace', 'extend']
@@ -29,15 +32,18 @@ if __name__ == '__main__':
     elif args.op == 'extend':
         sp_tok_vocab_freq_path = os.path.join(args.output_path, 'sp_tok_vocab_freq.txt')
         
-        
         call_params = ['python', '-m', 'ruadapt.tokenization.convert_hf_tokenizer_vocab_to_freq_list', 
              '--tokenizer_path', args.extend_hf_tokenizer_path,
              '--output_path', sp_tok_vocab_freq_path,
              '--type', args.extend_hf_tokenizer_type]
         
+        if args.custom_tokens_path is not None:
+            call_params += ['--custom_tokens_path', args.custom_tokens_path]
+        
         if args.only_ru:
             call_params.append('--only_ru')
-            
+
+        
         call_res = subprocess.call(call_params)
         if call_res != 0:
             print(call_res)
@@ -48,6 +54,7 @@ if __name__ == '__main__':
         tiktoken_base_path = os.path.join(args.output_path, 'tokenizer_base.tiktoken')
         
         shutil.copyfile(args.extend_tiktoken_tokenizer_path, tiktoken_base_path)
+        
         call_res = subprocess.call(
             ['python', '-m', 'ruadapt.tokenization.add_merges', 
              '--input_path', tiktoken_base_path,
@@ -59,7 +66,7 @@ if __name__ == '__main__':
             print(call_res)
             print('ERROR. Stoping pipeline')
             exit(1)
-
+        
         call_params = ['python', '-m', 'ruadapt.tokenization.expand_tiktoken_save_hf', 
              '--tiktoken_base_path', tiktoken_base_path,
              '--tiktoken_new_path', tokenizer_extended_part_path,
@@ -79,7 +86,9 @@ if __name__ == '__main__':
             ['python', '-m', 'ruadapt.tokenization.run_replace_tokenizer', 
              '--model_name_or_path', args.src_model_path,
              '--new_tokenizer_path', os.path.join(args.output_path, 'hf_tokenizer'),
-             '--output_path', args.output_path])
+             '--output_path', args.output_path,
+             '--mode', args.init_mode,
+             '--mult', str(args.mult)])
 
         
         

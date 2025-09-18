@@ -6,13 +6,31 @@ import json
 from .convert_tiktoken import generate_vocab_and_merges
 from argparse import ArgumentParser
 import re
+import base64
 # Based on Qwen
+def load_tiktoken_bpe(tiktoken_bpe_file):
+    # NB: do not add caching to this function
+    with open(tiktoken_bpe_file, 'rb') as file:
+        contents = file.read()
+    ret = {}
+    for line in contents.splitlines():
+        if not line:
+            continue
+        try:
+            token, rank = line.split()
+            ret[base64.b64decode(token)] = int(rank)
+        except Exception as e:
+            raise ValueError(f"Error parsing line {line!r} in {tiktoken_bpe_file}") from e
+    return ret
 
 def custom_tiktoken_extend(tiktoken_base_path, tiktoken_new_path):
     #mergeable_ranks = tiktoken_ext.openai_public.load_tiktoken_bpe('test_tiktoken/tokenizer_extended_test.model')
-    mergeable_ranks_base = tiktoken_ext.openai_public.load_tiktoken_bpe(tiktoken_base_path)
+    mergeable_ranks_base = load_tiktoken_bpe(tiktoken_base_path)
     used_ids = set(mergeable_ranks_base.values())
-    mergeable_ranks_extend = tiktoken_ext.openai_public.load_tiktoken_bpe(tiktoken_new_path)
+    mergeable_ranks_extend = load_tiktoken_bpe(tiktoken_new_path)
+    print(len(mergeable_ranks_base))
+    print(len(mergeable_ranks_extend))
+    print(tiktoken_new_path)
     for token, index in mergeable_ranks_extend.items():
         if token in mergeable_ranks_base:
             print(f"extra token {token} exists, skipping")

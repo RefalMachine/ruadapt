@@ -13,5 +13,5 @@ if __name__ == '__main__':
 
 
     files = [os.path.join(args.input_files_dir, f) for f in os.listdir(args.input_files_dir)][:args.count]
-    spm.SentencePieceTrainer.train(input=files, model_prefix=args.model_name, model_type=args.model_type, vocab_size=args.vocab_size, num_threads=30, split_digits=True, byte_fallback=True, train_extremely_large_corpus=True)
+    spm.SentencePieceTrainer.train(input=files, model_prefix=args.model_name, model_type=args.model_type, vocab_size=args.vocab_size, num_threads=30, split_digits=True, byte_fallback=False, train_extremely_large_corpus=True)
 

@@ -15,9 +15,11 @@ if __name__ == '__main__':
     parser.add_argument('--model_name_or_path')
     parser.add_argument('--new_tokenizer_path')
     parser.add_argument('--output_path')
+    parser.add_argument('--mode', default='mean')
+    parser.add_argument('--mult', default=1.0, type=float)
     #parser.add_argument('--type', default='mistral')
     args = parser.parse_args()
-
+    print(args)
     tokenizer_old = AutoTokenizer.from_pretrained(args.model_name_or_path)
     tokenizer_new = AutoTokenizer.from_pretrained(args.new_tokenizer_path)
     config = AutoConfig.from_pretrained(args.model_name_or_path)
@@ -26,7 +28,7 @@ if __name__ == '__main__':
     embeddings_old = model.model.embed_tokens.weight.data.clone()
     lm_head_old = model.lm_head.weight.data.clone()
 
-    reinit_logs = reinit_embeddings_with_head_universal(model, tokenizer_old, tokenizer_new, mode='mean', lm_head_init='hm')
+    reinit_logs = reinit_embeddings_with_head_universal(model, tokenizer_old, tokenizer_new, mode=args.mode, lm_head_init='hm', mult=args.mult)
 
     model.config.bos_token_id = tokenizer_new.bos_token_id
     model.config.eos_token_id = tokenizer_new.eos_token_id

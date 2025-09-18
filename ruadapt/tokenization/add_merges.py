@@ -7,7 +7,8 @@ from pathlib import Path
 
 import regex as re
 from tqdm.contrib.logging import tqdm_logging_redirect
-
+import json
+import codecs
 #BASED ON QWEN IMPL!!!!!
 
 PAT_STR = r"""(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"""
@@ -30,6 +31,7 @@ def load_tiktoken_bpe(tiktoken_bpe_file: str) -> "dict[bytes, int]":
 def dump_tiktoken_bpe(bpe_ranks: "dict[bytes, int]", tiktoken_bpe_file: str) -> None:
     with open(tiktoken_bpe_file, "wb") as f:
         for token, rank in sorted(bpe_ranks.items(), key=lambda x: x[1]):
+            token = eval(token)
             f.write(base64.b64encode(token) + b" " + str(rank).encode() + b"\n")
 
 
@@ -189,10 +191,18 @@ def make_new_merges_by_bpe(
 
     new_merges = learn_bpe(expand_vocab_freqs, mergeable_ranks)
     logger.info(f"number of newly learned merges: {len(new_merges)}")
+    #with codecs.open(output_path + '.new.json', 'w', 'utf-8') as file:
+    #    json.dump(new_merges, file)
+    extra_merges = {str(p[0] + p[1]): str(i) for i, p in enumerate(new_merges, start=start_id)}
+    print(len(extra_merges))
 
-    extra_merges = {p[0] + p[1]: i for i, p in enumerate(new_merges, start=start_id)}
+    with codecs.open(output_path + '.extra.json', 'w', 'utf-8') as file:
+        json.dump(extra_merges, file)
 
-    dump_tiktoken_bpe(extra_merges, output_path)
+    with codecs.open(output_path + '.extra.json', 'r', 'utf-8') as file:
+        data = json.load(file)
+
+    dump_tiktoken_bpe(data, output_path)
 
 
 def main():

@@ -4,11 +4,21 @@ from tqdm import tqdm
 import torch
 import codecs
 import json
+import numpy as np
 
+def get_weights(tokens, mult=1.0):
+    tl = len(tokens)
+    norm = sum([np.exp(-mult*i) for i in range(len(tokens))])
+    weights = [np.exp(-mult*i) / norm for i in range(len(tokens))]
+    return torch.tensor(weights)
 
-def reinit_embeddings_with_head_universal(model, tokenizer_src, tokenizer_dst, mode='random', lm_head_init='tie', add_special_tokens_src=True, mean_cutoff=None):
+def weight_average(tokens, mult=1.0):
+    weights = get_weights(tokens, mult)
+    return torch.stack([tokens[i] * _w for i, _w in enumerate(weights)]).sum(axis=0)
+
+def reinit_embeddings_with_head_universal(model, tokenizer_src, tokenizer_dst, mode='random', lm_head_init='tie', add_special_tokens_src=True, mean_cutoff=None, mult=1.0):
     assert lm_head_init in ['tie', 'hm']
-    assert mode in ['random', 'mean']
+    assert mode in ['random', 'mean', 'wmean']
     assert model.lm_head.bias is None
 
     if mean_cutoff is None:
@@ -42,7 +52,7 @@ def reinit_embeddings_with_head_universal(model, tokenizer_src, tokenizer_dst, m
 
     logs = []
     tokenizer_src_vocab = tokenizer_src.get_vocab()
-    if mode == 'mean':
+    if mode == 'mean' or mode == 'wmean':
         spec_tokens = set()
         for key in tokenizer_dst.special_tokens_map:
             if key == 'additional_special_tokens':
@@ -71,7 +81,10 @@ def reinit_embeddings_with_head_universal(model, tokenizer_src, tokenizer_dst, m
                 if embed_tokens_ids is None:
                     input_emb_vec = input_emb_mean
                 else:
-                    input_emb_vec = embeddings_src[embed_tokens_ids].mean(axis=0).to(torch_dtype)
+                    if mode == 'mean': 
+                        input_emb_vec = embeddings_src[embed_tokens_ids].mean(axis=0).to(torch_dtype)
+                    elif mode == 'wmean':
+                        input_emb_vec = weight_average(embeddings_src[embed_tokens_ids], mult=mult).to(torch_dtype)
 
                 if input_emb_vec.norm() < 1e-12:
                     logs[-1]['input_emb_vec_mean'] = True
@@ -82,7 +95,10 @@ def reinit_embeddings_with_head_universal(model, tokenizer_src, tokenizer_dst, m
                     if embed_tokens_ids is None:
                         output_emb_vec = output_emb_mean
                     else:
-                        output_emb_vec = lm_head_src[embed_tokens_ids].mean(axis=0).to(torch_dtype)
+                        if mode == 'mean': 
+                            output_emb_vec = lm_head_src[embed_tokens_ids].mean(axis=0).to(torch_dtype)
+                        elif mode == 'wmean':
+                            output_emb_vec = weight_average(lm_head_src[embed_tokens_ids], mult=mult).to(torch_dtype)
                 elif lm_head_init == 'tie':
                     output_emb_vec = input_emb_vec
                 
