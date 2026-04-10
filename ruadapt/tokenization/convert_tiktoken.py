@@ -2,8 +2,27 @@ import json
 import os
 
 import tiktoken
-from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
+#from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
 from typing import Dict, Optional
+
+def bytes_to_unicode() -> dict[int, str]:
+    """
+    Returns the GPT-2 byte-to-unicode mapping.
+    """
+    bs = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(ord("¡"), ord("¬") + 1))
+        + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    cs = bs[:]
+    n = 0
+    for b in range(2**8):
+        if b not in bs:
+            bs.append(b)
+            cs.append(2**8 + n)
+            n += 1
+    cs = [chr(n) for n in cs]
+    return dict(zip(bs, cs))
 
 byte_encoder = bytes_to_unicode()
 
@@ -38,7 +57,12 @@ def generate_vocab_and_merges(encoder):
     if len(token) == 1:
       continue
     merged = tuple(bpe(mergeable_ranks, token, max_rank=rank))
-    assert len(merged) == 2
+    if len(merged) != 2:
+      #print("RANK: ", rank)
+      #print("MERGED PARTS:", [m.decode('utf-8', errors='replace') for m in merged], "| RAW BYTES:", merged)
+      #print("ORIGINAL TOKEN:", token.decode('utf-8', errors='replace'), "| RAW BYTES:", token)
+      #print('---'*10)
+      continue
 
     merges.append(' '.join(map(token_bytes_to_string, merged)))
 

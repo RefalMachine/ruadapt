@@ -2,13 +2,15 @@ from torch import nn
 from tqdm import tqdm
 import torch
 import argparse
-from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, AutoConfig
+from transformers import AutoTokenizer, LlamaTokenizer, AutoConfig, AutoModel
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
 import torch
 from .replace_tokenizer import reinit_embeddings_with_head_universal
 from .utils import special_encode
 import codecs
 import json
 import os
+import sys
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -17,19 +19,67 @@ if __name__ == '__main__':
     parser.add_argument('--output_path')
     parser.add_argument('--mode', default='mean')
     parser.add_argument('--mult', default=1.0, type=float)
-    #parser.add_argument('--type', default='mistral')
     args = parser.parse_args()
     print(args)
+    
+    
+
     tokenizer_old = AutoTokenizer.from_pretrained(args.model_name_or_path)
     tokenizer_new = AutoTokenizer.from_pretrained(args.new_tokenizer_path)
     config = AutoConfig.from_pretrained(args.model_name_or_path)
-    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, device_map='cuda:0', torch_dtype=config.torch_dtype)
+    
+    # Динамический выбор класса архитектуры
+    architectures = getattr(config, "architectures", [])
+    if architectures and "Qwen3_5ForConditionalGeneration" in architectures:
+        print("Detected VLM architecture. Loading via Qwen3_5ForConditionalGeneration.")
+        from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
+        ModelClass = Qwen3_5ForConditionalGeneration
+    else:
+        print(f"Detected Text architecture: {architectures}. Loading via AutoModelForCausalLM.")
+        from transformers import AutoModelForCausalLM
+        ModelClass = AutoModelForCausalLM
 
-    embeddings_old = model.model.embed_tokens.weight.data.clone()
-    lm_head_old = model.lm_head.weight.data.clone()
+    model = ModelClass.from_pretrained(
+        args.model_name_or_path, 
+        device_map='cuda:0',
+        torch_dtype=config.torch_dtype,
+        trust_remote_code=True
+    )
+    print(model)
+    # Извлечение матриц согласно распечатке структуры модели:
+    # model (Qwen3_5ForConditionalGeneration)
+    #  -> .model (Qwen3_5Model)
+    #      -> .language_model (Qwen3_5TextModel)
+    #          -> .embed_tokens
+    #  -> .lm_head
+    if hasattr(model, 'model') and hasattr(model.model, 'language_model'):
+        embed_tokens = model.model.language_model.embed_tokens
+        lm_head = model.lm_head
+    elif hasattr(model, 'language_model'):
+        embed_tokens = model.language_model.model.embed_tokens if hasattr(model.language_model, 'model') else model.language_model.embed_tokens
+        lm_head = getattr(model, 'lm_head', getattr(model.language_model, 'lm_head', None))
+    else:
+        embed_tokens = model.model.embed_tokens
+        lm_head = model.lm_head
 
+    embeddings_old = embed_tokens.weight.data.clone()
+    lm_head_old = lm_head.weight.data.clone()
+
+    target_multiple = 256
+    current_len = len(tokenizer_new)
+    pad_needed = (target_multiple - (current_len % target_multiple)) % target_multiple
+    
+    # СНАЧАЛА добавляем токены и ресайзим матрицы
+    if pad_needed > 0:
+        print(f"Padding vocabulary from {current_len} to {current_len + pad_needed} (+{pad_needed} free tokens)")
+        new_tokens = [f"<|free_token{i+1}|>" for i in range(pad_needed)]
+        tokenizer_new.add_tokens(new_tokens)
+        model.resize_token_embeddings(len(tokenizer_new))
+
+    # Переинициализация весов
     reinit_logs = reinit_embeddings_with_head_universal(model, tokenizer_old, tokenizer_new, mode=args.mode, lm_head_init='hm', mult=args.mult)
 
+    # Обновление конфига
     model.config.bos_token_id = tokenizer_new.bos_token_id
     model.config.eos_token_id = tokenizer_new.eos_token_id
     model.config.pad_token_id = tokenizer_new.pad_token_id
@@ -37,168 +87,13 @@ if __name__ == '__main__':
     model.generation_config.eos_token_id = tokenizer_new.eos_token_id
     model.generation_config.pad_token_id = tokenizer_new.pad_token_id
     
-    word = 'онный'
-    print(word)
-    #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-    new_id = special_encode(word, tokenizer_new)
-    old_ids = special_encode(word, tokenizer_old)
-    print(new_id, old_ids)
+    model.config.vocab_size = len(tokenizer_new)
 
-    print('Embeddings')
-    print(embeddings_old[old_ids])
-    print(embeddings_old[old_ids].mean(axis=0))
-    print(model.model.embed_tokens.weight[new_id])
-
-    print('LM head')
-    print(lm_head_old[old_ids])
-    print(lm_head_old[old_ids].mean(axis=0))
-    print(model.lm_head.weight[[new_id]])
-
-    word = ' Пушкин'
-    print(word)
-    #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-    new_id = special_encode(word, tokenizer_new)
-    old_ids = special_encode(word, tokenizer_old)
-    print(new_id, old_ids)
-
-    print('Embeddings')
-    print(embeddings_old[old_ids])
-    print(embeddings_old[old_ids].mean(axis=0))
-    print(model.model.embed_tokens.weight[new_id])
-
-    print('LM head')
-    print(lm_head_old[old_ids])
-    print(lm_head_old[old_ids].mean(axis=0))
-    print(model.lm_head.weight[[new_id]])
-
-
-    word = '\n'
-    print('|' + word + '|')
-    #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-    new_id = special_encode(word, tokenizer_new)
-    old_ids = special_encode(word, tokenizer_old)
-    print(new_id, old_ids)
-
-    print('Embeddings')
-    print(embeddings_old[old_ids])
-    print(embeddings_old[old_ids].mean(axis=0))
-    print(model.model.embed_tokens.weight[new_id])
-
-    print('LM head')
-    print(lm_head_old[old_ids])
-    print(lm_head_old[old_ids].mean(axis=0))
-    print(model.lm_head.weight[[new_id]])
-
-    word = tokenizer_old.bos_token
-    if word is None:
-        print(tokenizer_old)
-        print(tokenizer_old.special_tokens_map)
-        word = tokenizer_old.special_tokens_map.get('bos_token', None)
-    if word is not None:
-        print('|' + word + '|')
-        #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-        new_id = special_encode(word, tokenizer_new)
-        old_ids = special_encode(word, tokenizer_old)
-        print(new_id, old_ids)
-
-        print('Embeddings')
-        print(embeddings_old[old_ids])
-        print(embeddings_old[old_ids].mean(axis=0))
-        print(model.model.embed_tokens.weight[new_id])
-
-        print('LM head')
-        print(lm_head_old[old_ids])
-        print(lm_head_old[old_ids].mean(axis=0))
-        print(model.lm_head.weight[[new_id]])
-
-    word = tokenizer_old.eos_token
-    if word is None:
-        print(tokenizer_old)
-        print(tokenizer_old.special_tokens_map)
-        word = tokenizer_old.special_tokens_map['eos_token']
-    if word is not None:
-        print('|' + word + '|')
-        #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-        new_id = special_encode(word, tokenizer_new)
-        old_ids = special_encode(word, tokenizer_old)
-        print(new_id, old_ids)
-
-        print('Embeddings')
-        print(embeddings_old[old_ids])
-        print(embeddings_old[old_ids].mean(axis=0))
-        print(model.model.embed_tokens.weight[new_id])
-
-        print('LM head')
-        print(lm_head_old[old_ids])
-        print(lm_head_old[old_ids].mean(axis=0))
-        print(model.lm_head.weight[[new_id]])
-
-    word = '\n\n'
-    print('|' + word + '|')
-    #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-    new_id = special_encode(word, tokenizer_new)
-    old_ids = special_encode(word, tokenizer_old)
-    print(new_id, old_ids)
-
-    print('Embeddings')
-    print(embeddings_old[old_ids])
-    print(embeddings_old[old_ids].mean(axis=0))
-    print(model.model.embed_tokens.weight[new_id])
-
-    print('LM head')
-    print(lm_head_old[old_ids])
-    print(lm_head_old[old_ids].mean(axis=0))
-    print(model.lm_head.weight[[new_id]])
-
-    word = '\t'
-    print('|' + word + '|')
-    #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-    new_id = special_encode(word, tokenizer_new)
-    old_ids = special_encode(word, tokenizer_old)
-    print(new_id, old_ids)
-
-    print('Embeddings')
-    print(embeddings_old[old_ids])
-    print(embeddings_old[old_ids].mean(axis=0))
-    print(model.model.embed_tokens.weight[new_id])
-
-    print('LM head')
-    print(lm_head_old[old_ids])
-    print(lm_head_old[old_ids].mean(axis=0))
-    print(model.lm_head.weight[[new_id]])
-
-    word = ' '
-    print('|' + word + '|')
-    #new_id = tokenizer_new(word, add_special_tokens=False)['input_ids']
-    new_id = special_encode(word, tokenizer_new)
-    old_ids = special_encode(word, tokenizer_old)
-    print(new_id, old_ids)
-
-    print('Embeddings')
-    print(embeddings_old[old_ids])
-    print(embeddings_old[old_ids].mean(axis=0))
-    print(model.model.embed_tokens.weight[new_id])
-
-    print('LM head')
-    print(lm_head_old[old_ids])
-    print(lm_head_old[old_ids].mean(axis=0))
-    print(model.lm_head.weight[[new_id]])
-
-    #print(embeddings_old[[128000, 128001, 128005]])
-    #print(model.model.embed_tokens.weight[[128000, 128001, 128005]])
-    #print(model.model.embed_tokens.weight[[32000, 32001, 32005]])
-    #print(lm_head_old[[128000, 128001, 128005]])
-    #print(model.lm_head.weight[[128000, 128001, 128005]])
-    #print(model.lm_head.weight[[32000, 32001, 32005]])
-    #print(model.model.embed_tokens.weight)
-    #print(model.lm_head.weight)
-
-    new_tokens = [f"<|free_token{i+1}|>" for i in range(21)]
-    tokenizer_new.add_tokens(new_tokens)
-    model.resize_token_embeddings(len(tokenizer_new))
-    print(model.lm_head.weight.shape)
+    print("Saving model and tokenizer...")
     model.save_pretrained(args.output_path)
     tokenizer_new.save_pretrained(args.output_path)
 
     with codecs.open(os.path.join(args.output_path, 'reinit_tokenizer_logs.json'), 'w', 'utf-8') as file:
         json.dump(reinit_logs, file, ensure_ascii=False, indent=4)
+        
+    print("Done. VLM Architecture preserved.")
