@@ -26,10 +26,12 @@ if __name__ == '__main__':
 
     tokenizer_old = AutoTokenizer.from_pretrained(args.model_name_or_path)
     tokenizer_new = AutoTokenizer.from_pretrained(args.new_tokenizer_path)
-    config = AutoConfig.from_pretrained(args.model_name_or_path)
+    
+    # Загружаем старый конфиг для корректной загрузки весов
+    config_old = AutoConfig.from_pretrained(args.model_name_or_path)
     
     # Динамический выбор класса архитектуры
-    architectures = getattr(config, "architectures", [])
+    architectures = getattr(config_old, "architectures", [])
     if architectures and "Qwen3_5ForConditionalGeneration" in architectures:
         print("Detected VLM architecture. Loading via Qwen3_5ForConditionalGeneration.")
         from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
@@ -39,10 +41,12 @@ if __name__ == '__main__':
         from transformers import AutoModelForCausalLM
         ModelClass = AutoModelForCausalLM
 
+    # Загружаем модель со старым конфигом, чтобы веса полностью совпали
     model = ModelClass.from_pretrained(
-        args.model_name_or_path, 
+        args.model_name_or_path,
+        config=config_old,
         device_map='cuda:0',
-        torch_dtype=config.torch_dtype,
+        torch_dtype=config_old.torch_dtype,
         trust_remote_code=True
     )
     print(model)
@@ -79,18 +83,29 @@ if __name__ == '__main__':
     # Переинициализация весов
     reinit_logs = reinit_embeddings_with_head_universal(model, tokenizer_old, tokenizer_new, mode=args.mode, lm_head_init='hm', mult=args.mult)
 
-    # Обновление конфига
-    model.config.bos_token_id = tokenizer_new.bos_token_id
-    model.config.eos_token_id = tokenizer_new.eos_token_id
-    model.config.pad_token_id = tokenizer_new.pad_token_id
-    model.generation_config.bos_token_id = tokenizer_new.bos_token_id
-    model.generation_config.eos_token_id = tokenizer_new.eos_token_id
-    model.generation_config.pad_token_id = tokenizer_new.pad_token_id
+    # Подменяем конфиг модели на тот, что сгенерирован в промежуточной папке (с правильными ID)
+    config_new = AutoConfig.from_pretrained(args.new_tokenizer_path)
+    config_new.vocab_size = len(tokenizer_new)
+    if hasattr(config_new, 'text_config'):
+        config_new.text_config.vocab_size = len(tokenizer_new)
+    model.config = config_new
+
+    # Поскольку extend_tokenizer.py обновляет только config.json, 
+    # generation_config все еще содержит старые ID.
+    # Если generation_config был создан из конфига по умолчанию (не из файла), 
+    # мы должны обновить его атрибуты перед сохранением.
+    # Так как мы подменили model.config, создадим полностью новый GenerationConfig на основе нового model.config
+    from transformers import GenerationConfig
+    model.generation_config = GenerationConfig.from_model_config(config_new)
     
-    model.config.vocab_size = len(tokenizer_new)
+    for attr_name in dir(tokenizer_new):
+        if attr_name.endswith("_token_id") and getattr(tokenizer_new, attr_name) is not None:
+            setattr(model.generation_config, attr_name, getattr(tokenizer_new, attr_name))
 
     print("Saving model and tokenizer...")
     model.save_pretrained(args.output_path)
+    # Явно сохраняем generation_config.json
+    model.generation_config.save_pretrained(args.output_path)
     tokenizer_new.save_pretrained(args.output_path)
 
     with codecs.open(os.path.join(args.output_path, 'reinit_tokenizer_logs.json'), 'w', 'utf-8') as file:
