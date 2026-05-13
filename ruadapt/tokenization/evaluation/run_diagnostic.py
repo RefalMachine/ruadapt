@@ -58,7 +58,7 @@ def get_model_info(model_path, tokenizer):
             ModelClass = AutoModelForCausalLM
             
         try:
-            model = ModelClass.from_pretrained(model_path, device_map="meta", trust_remote_code=True)
+            model = ModelClass.from_pretrained(model_path, device_map="meta", trust_remote_code=True, attn_implementation="flash_attention_2")
             
             # Universal layer extractor
             if hasattr(model, 'get_input_embeddings'):

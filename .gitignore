@@ -4,3 +4,4 @@ test_group.json
 outputs/
 *.jsonl
 wandb/
+ruadapt/tokenization/evaluation/data

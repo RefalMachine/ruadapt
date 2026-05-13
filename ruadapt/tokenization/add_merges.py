@@ -220,16 +220,30 @@ def main():
         type=str,
         help="Path for words needed adding, each line is a word and its frequency separated by \\t",
     )
-    # if the extended vocabulary is for fine-tuning, you better set those correctly (the default is for qwen.tiktoken)
-    # if the extended vocabulary is for pretraining from the start, no need
+    parser.add_argument(
+        "--hf_tokenizer_dir",
+        type=str,
+        default=None,
+        help="Path to original HF tokenizer to accurately calculate start_id including special tokens.",
+    )
     parser.add_argument(
         "--start_id",
         type=int,
-        default=151851,
-        help="The start id for new merges. For Qwen tokenizer, this should be 151851 (skipping the existing special tokens)",
+        default=-1,
+        help="The start id for new merges. Will be overridden by hf_tokenizer_dir if provided.",
     )
 
     args = parser.parse_args()
+
+    # Calculate accurate start_id
+    if args.hf_tokenizer_dir:
+        from transformers import AutoTokenizer
+        try:
+            tok = AutoTokenizer.from_pretrained(args.hf_tokenizer_dir)
+            args.start_id = len(tok)
+            logger.info(f"Calculated start_id={args.start_id} from HF tokenizer (includes special tokens)")
+        except Exception as e:
+            logger.warning(f"Failed to load HF tokenizer for start_id calculation: {e}")
 
     make_new_merges_by_bpe(
         args.input_path, args.output_path, args.vocab_path, args.start_id

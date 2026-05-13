@@ -81,8 +81,15 @@ if __name__ == '__main__':
     output_dir = args.output_dir
 
     if args.init_output_from is not None:
-        tokenizer = AutoTokenizer.from_pretrained(args.init_output_from)
-        tokenizer.save_pretrained(output_dir)
+        import shutil
+        os.makedirs(output_dir, exist_ok=True)
+        # Copy original HF files to preserve chat_template and proper tokenizer_config.json
+        # Only copy what's absolutely necessary. DO NOT copy vocab.json and merges.txt 
+        # because AutoTokenizer might prioritize them over tokenizer.json!
+        for filename in ['tokenizer_config.json', 'tokenizer.json', 'special_tokens_map.json']:
+            src = os.path.join(args.init_output_from, filename)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(output_dir, filename))
 
     tiktoken_tokenizer_dict = custom_tiktoken_extend(tiktoken_base_path, tiktoken_new_path)
     tiktoken_tokenizer = tiktoken.core.Encoding(tiktoken_tokenizer_dict.pop('name'), **tiktoken_tokenizer_dict)
@@ -91,14 +98,100 @@ if __name__ == '__main__':
     if args.filter_numbers:
         vocab, merges = filter_numbers(vocab, merges) 
 
-    print(len(vocab), len(merges))
+    # We must patch tokenizer.json carefully to preserve special tokens and original merges
+    tokenizer_json_path = os.path.join(output_dir, 'tokenizer.json')
+    if os.path.exists(tokenizer_json_path):
+        with open(tokenizer_json_path, 'r', encoding='utf-8') as f:
+            full_data = json.load(f)
+            
+        original_vocab = full_data["model"]["vocab"]
+        original_merges = full_data["model"]["merges"]
+        
+        # Calculate max original ID (base vocab + special added tokens)
+        max_orig_id = max(original_vocab.values())
+        if "added_tokens" in full_data:
+            max_orig_id = max(max_orig_id, max(t["id"] for t in full_data["added_tokens"]))
+            
+        # Append only NEW vocab items (ID > max_orig_id)
+        new_vocab_count = 0
+        for k, v in vocab.items():
+            if v > max_orig_id:
+                original_vocab[k] = v
+                new_vocab_count += 1
+                
+        # HF save_pretrained() sometimes serializes merges as lists of strings instead of space-separated strings.
+        # We normalize them back to standard space-separated strings.
+        normalized_merges = []
+        for m in original_merges:
+            if isinstance(m, list):
+                normalized_merges.append(" ".join(m))
+            else:
+                normalized_merges.append(str(m))
+        original_merges = normalized_merges
+            
+        # Append only NEW merges that are STRICTLY CYRILLIC
+        orig_merges_set = set(original_merges)
+        new_merges_count = 0
+        
+        # Helper to decode GPT2 format to text to check for cyrillic
+        def is_cyrillic_merge(merge_str):
+            bs = (
+                list(range(ord("!"), ord("~") + 1))
+                + list(range(ord("¡"), ord("¬") + 1))
+                + list(range(ord("®"), ord("ÿ") + 1))
+            )
+            cs = bs[:]
+            n = 0
+            for b in range(2**8):
+                if b not in bs:
+                    bs.append(b)
+                    cs.append(2**8 + n)
+                    n += 1
+            cs = [chr(n) for n in cs]
+            b2c = dict(zip(bs, cs))
+            c2b = {v: k for k, v in b2c.items()}
+            
+            p1, p2 = merge_str.split(" ", 1)
+            b1 = bytes([c2b.get(c, 0) for c in p1])
+            b2 = bytes([c2b.get(c, 0) for c in p2])
+            b_full = b1 + b2
+            
+            try:
+                text = b_full.decode("utf-8", errors="strict")
+                import re
+                # MUST contain at least one Cyrillic character.
+                # If it's just English letters, numbers, or punctuation -> reject.
+                if not re.search(r"[А-Яа-яЁё]", text):
+                    return False
+                return True
+            except UnicodeDecodeError:
+                return False
 
-    os.remove(os.path.join(output_dir, 'tokenizer.json'))
-    with open(os.path.join(output_dir, 'vocab.json'), 'w', encoding='utf-8') as fp:
-        json.dump(vocab, fp, ensure_ascii=False)
-
-    with open(os.path.join(output_dir, 'merges.txt'), 'w', encoding='utf-8') as fp:
-        fp.write('\n'.join(merges))
-
-    tiktoken_tokenizer = AutoTokenizer.from_pretrained(output_dir)
-    tiktoken_tokenizer.save_pretrained(output_dir)
+        for m in merges:
+            if m not in orig_merges_set:
+                if is_cyrillic_merge(m):
+                    original_merges.append(m)
+                    new_merges_count += 1
+                
+        print(f"Injected {new_vocab_count} new tokens and {new_merges_count} new strictly-safe merges into HF tokenizer.")
+        
+        full_data["model"]["vocab"] = original_vocab
+        full_data["model"]["merges"] = original_merges
+        
+        with open(tokenizer_json_path, 'w', encoding='utf-8') as f:
+            json.dump(full_data, f, ensure_ascii=False, indent=2)
+            
+        # VERY IMPORTANT: Delete vocab.json and merges.txt if they exist.
+        # If we leave them here, HuggingFace AutoTokenizer falls back to the slow, buggy Python
+        # Qwen2Tokenizer which breaks Hindi/Arabic unicode BPE merges. 
+        # By removing them, we force HF to load tokenizer.json via the fast Rust TokenizersBackend.
+        for legacy_file in ['vocab.json', 'merges.txt']:
+            lf_path = os.path.join(output_dir, legacy_file)
+            if os.path.exists(lf_path):
+                os.remove(lf_path)
+    else:
+        print("WARNING: tokenizer.json not found, falling back to raw txt output.")
+        with open(os.path.join(output_dir, 'vocab.json'), 'w', encoding='utf-8') as fp:
+            json.dump(vocab, fp, ensure_ascii=False)
+        with open(os.path.join(output_dir, 'merges.txt'), 'w', encoding='utf-8') as fp:
+            fp.write('\n'.join(merges))
