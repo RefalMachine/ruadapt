@@ -5,7 +5,8 @@ import argparse
 from transformers import AutoTokenizer, LlamaTokenizer, AutoConfig, AutoModel
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
 import torch
-from .replace_tokenizer import reinit_embeddings_with_head_universal
+from .replace import reinit_embeddings_with_head_universal
+from .replace_batched import reinit_embeddings_with_head_universal_batched
 from .utils import special_encode
 import codecs
 import json
@@ -17,8 +18,11 @@ if __name__ == '__main__':
     parser.add_argument('--model_name_or_path')
     parser.add_argument('--new_tokenizer_path')
     parser.add_argument('--output_path')
-    parser.add_argument('--mode', default='mean')
+    parser.add_argument('--mode', default='mean', choices=['mean', 'wmean', 'random', 'mlp'])
     parser.add_argument('--mult', default=1.0, type=float)
+    parser.add_argument('--head_path', default=None, help='Path to trained MLP head (required for mode=mlp)')
+    parser.add_argument('--pooling', default='attention', help='Pooling architecture for mlp mode')
+    parser.add_argument('--batch_size', default=256, type=int, help='Batch size for mlp mode')
     args = parser.parse_args()
     print(args)
     
@@ -81,7 +85,15 @@ if __name__ == '__main__':
         model.resize_token_embeddings(len(tokenizer_new))
 
     # Переинициализация весов
-    reinit_logs = reinit_embeddings_with_head_universal(model, tokenizer_old, tokenizer_new, mode=args.mode, lm_head_init='hm', mult=args.mult)
+    if args.mode == 'mlp':
+        reinit_logs = reinit_embeddings_with_head_universal_batched(
+            model, tokenizer_old, tokenizer_new,
+            mode=args.mode, lm_head_init='hm',
+            mult=args.mult, head_path=args.head_path,
+            pooling=args.pooling, batch_size=args.batch_size
+        )
+    else:
+        reinit_logs = reinit_embeddings_with_head_universal(model, tokenizer_old, tokenizer_new, mode=args.mode, lm_head_init='hm', mult=args.mult)
 
     # Подменяем конфиг модели на тот, что сгенерирован в промежуточной папке (с правильными ID)
     config_new = AutoConfig.from_pretrained(args.new_tokenizer_path)

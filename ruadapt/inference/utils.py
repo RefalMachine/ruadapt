@@ -1,14 +1,3 @@
-import json
+"""Re-exports from ruadapt.utils.io for backward compatibility."""
 
-def read_jsonl(file_name):
-    with open(file_name, encoding="utf-8") as r:
-        return [json.loads(line) for line in r]
-
-def read_json(file_name):
-    with open(file_name, encoding="utf-8") as r:
-        return json.load(r)
-    
-def write_jsonl(records, path):
-    with open(path, "w", encoding="utf-8") as w:
-        for r in records:
-            w.write(json.dumps(r, ensure_ascii=False) + "\n")
+from ruadapt.utils.io import read_json, read_jsonl, write_jsonl

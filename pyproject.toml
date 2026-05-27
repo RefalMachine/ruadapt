@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ruadapt"
+version = "0.1.0"
+description = "Toolkit for adapting English-centric LLMs to Russian language"
+requires-python = ">=3.10"
+dependencies = [
+    # Core (from dgx_llm)
+    "torch>=2.1.0",
+    "transformers>=4.40.0",
+    "peft>=0.10.0",
+    "datasets>=2.18.0",
+    "accelerate>=0.28.0",
+    "deepspeed>=0.14.0",
+    "fire>=0.6.0",
+    # Tokenization
+    "tiktoken",
+    "sentencepiece",
+    "regex",
+    "safetensors",
+]
+
+[project.optional-dependencies]
+eval = ["vllm", "bitsandbytes"]
+analytics = ["matplotlib", "numpy", "scipy"]
+dev = ["pytest", "ruff"]
+all = ["ruadapt[eval,analytics,dev]"]
+
+[project.scripts]
+ruadapt-train = "ruadapt.training.train:main"
+
+[tool.setuptools.packages.find]
+include = ["ruadapt*"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

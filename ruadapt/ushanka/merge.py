@@ -1,7 +1,7 @@
 import json
 import torch
 from transformers import AutoTokenizer
-from .ushanka_proj_utils import PROJECTION_MODES
+from .projection import PROJECTION_MODES
 
 
 def load_occs(path):

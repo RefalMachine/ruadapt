@@ -1,0 +1,58 @@
+{
+  "model": {
+    "model_name_or_path": "/workdir/models/RuadaptQwen3.5-2B-Base-u128_cut64_min4_reldist_rdr0.3",
+    "torch_dtype": "bfloat16",
+    "attn_implementation": "flash_attention_2"
+  },
+  "data": {
+    "train_file": "/shared/data/data/pre-train/darulm_25_03_25/train_part1.json",
+    "max_train_samples": 5000,
+    "block_size": 512,
+    "preprocessing_num_workers": 1,
+    "cache_dir": "/workdir/cache/dgx_llm",
+    "overwrite_cache": false,
+    "max_text_length": 50000
+  },
+  "lora": {
+    "peft": false
+  },
+  "freeze": {
+    "strategy": "embed_only",
+    "freeze_idx": 248044
+  },
+  "unified_dataset": {
+    "natural_boundaries": true,
+    "fragment_ratio": 0.0,
+    "p_split": 0.3,
+    "domain_filter_field": "domain",
+    "domain_filter_exclude_value": ["enwiki"]
+  },
+  "training": {
+    "output_dir": "/workdir/models/smoke_darulm_cpt",
+    "per_device_train_batch_size": 16,
+    "per_device_eval_batch_size": 32,
+    "gradient_accumulation_steps": 2,
+    "max_steps": 50,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0,
+    "embed_weight_decay": 0.0,
+    "warmup_ratio": 0.05,
+    "lr_scheduler_type": "warmup_stable_decay",
+    "wsd_constant_part": 0.85,
+    "logging_steps": 10,
+    "save_steps": 100,
+    "save_strategy": "steps",
+    "save_total_limit": 1,
+    "bf16": true,
+    "optim": "adamw_torch",
+    "max_grad_norm": 1.0,
+    "seed": 42,
+    "gradient_checkpointing": false,
+    "dataloader_num_workers": 4,
+    "remove_unused_columns": false,
+    "report_to": ["tensorboard"],
+    "eval_steps": 50
+  },
+  "dataset_factory": "ruadapt.training.datasets.unified_factory.UnifiedDatasetFactory",
+  "collator_factory": "ruadapt.training.datasets.unified_factory.UnifiedCollatorFactory"
+}

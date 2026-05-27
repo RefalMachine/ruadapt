@@ -7,8 +7,8 @@ import json
 import codecs
 from pathlib import Path
 from huggingface_hub import snapshot_download
-from .src.ushanka import make_ushanka
-from .src.ushanka_proj_utils import list_projection_modes
+from .merge import make_ushanka
+from .projection import list_projection_modes
 import shutil
 import os
 from safetensors import safe_open
