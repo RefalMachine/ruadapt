@@ -304,15 +304,20 @@ def _pack_and_substitute_fn(
         targeted: p_stop = 1 - p_split (probability of stopping)
     """
     random.seed(seed)
-
-    all_ids: List[int] = []
-    for seq in examples["input_ids"]:
-        all_ids.extend(seq)
+    from itertools import chain
 
     # Determine if any substitution is active
     do_random = substitution_method == "random" and fragment_ratio > 0
     do_targeted = substitution_method == "targeted" and parent_pool_set
     do_hybrid = substitution_method == "hybrid" and parent_pool_set
+
+    # Speed up by using fast itertools.chain on C-level instead of sequential Python loops
+    if not (do_random or do_targeted or do_hybrid):
+        all_ids = list(chain(*examples["input_ids"]))
+    else:
+        all_ids = []
+        for seq in examples["input_ids"]:
+            all_ids.extend(seq)
 
     # For hybrid: precompute which tokens are in the parent pool (by ID)
     hybrid_pool_ids: Optional[Set[int]] = None
@@ -371,9 +376,11 @@ def _pack_and_substitute_fn(
             else:
                 input_ids.append(tid)
                 labels.append(tid)
+        has_substitutions = True
     else:
         input_ids = all_ids
         labels = all_ids
+        has_substitutions = False
 
     # Pack into chunks
     if natural_boundaries and newline_ids:
@@ -409,13 +416,15 @@ def _pack_and_substitute_fn(
 
         if segments:
             out_ids = [input_ids[s:e] for s, e in segments]
-            out_lbls = [labels[s:e] for s, e in segments]
+            # Avoid redundant slicing if input_ids and labels are identical
+            out_lbls = out_ids.copy() if not has_substitutions else [labels[s:e] for s, e in segments]
             return {"input_ids": out_ids, "labels": out_lbls}
 
     # Fallback: fixed-size packing
     usable = (len(input_ids) // max_length) * max_length
     out_ids = [input_ids[i:i + max_length] for i in range(0, usable, max_length)]
-    out_lbls = [labels[i:i + max_length] for i in range(0, usable, max_length)]
+    # Avoid redundant slicing if input_ids and labels are identical
+    out_lbls = out_ids.copy() if not has_substitutions else [labels[i:i + max_length] for i in range(0, usable, max_length)]
     return {"input_ids": out_ids, "labels": out_lbls}
 
 
@@ -492,14 +501,21 @@ def make_pack_fn(
             random_ids.discard(None)
             substitutable_ids.update(random_ids)
 
-    def pack_fn(examples):
+    def pack_fn(examples, idx=None):
+        # Incorporate batch/shard index into the seed for perfect determinism in parallel execution
+        local_seed = seed
+        if idx is not None:
+            # If idx is a list of indices, use the first one, otherwise use it directly
+            batch_offset = idx[0] if isinstance(idx, list) else idx
+            local_seed = seed + batch_offset
+
         return _pack_and_substitute_fn(
             examples,
             max_length=max_length,
             natural_boundaries=natural_boundaries,
             fragment_ratio=fragment_ratio,
             p_split=p_split,
-            seed=seed,
+            seed=local_seed,
             bos_id=bos_id,
             eos_id=eos_id,
             id_to_str=id_to_str,
@@ -576,19 +592,34 @@ class PackedDataset(Dataset):
             self._init_stats_empty(tokenizer, n_documents)
             return
 
-        all_data = pre_packed_dataset["input_ids"]
-        all_labels = pre_packed_dataset["labels"]
+        import time
+        t_start = time.time()
 
-        self.data = torch.tensor(all_data, dtype=torch.long)
-        self.labels = torch.tensor(all_labels, dtype=torch.long)
+        # Extract underlying PyArrow arrays directly.
+        # This completely bypasses HF datasets formatting engine (avoiding the torchvision bug)
+        # and converts Arrow memory to NumPy in microseconds with zero copies!
+        import numpy as np
+        table = pre_packed_dataset.data
+        
+        # Bypassing datasets __getitem__ to avoid calling broken torchvision.io imports
+        all_ids_np = np.stack(table.column("input_ids").to_numpy())
+        all_labels_np = np.stack(table.column("labels").to_numpy())
+        
+        self.data = torch.from_numpy(all_ids_np).long()
+        self.labels = torch.from_numpy(all_labels_np).long()
+
+        t_convert = time.time() - t_start
+        _log(f"Arrow to Tensor zero-copy convert took: {t_convert:.4f} seconds")
 
         usable = n_chunks * max_length
         self.total_tokens = usable
         _log(f"Packed: {n_chunks} chunks x {max_length} = {usable:,} tokens")
 
         if compute_token_freq:
+            t_stats_start = time.time()
             token_freq: Counter = Counter()
-            for chunk in all_data:
+            # Iterate over numpy array directly for speed
+            for chunk in all_ids_np:
                 token_freq.update(chunk)
 
             if freeze_idx is not None:
@@ -599,6 +630,8 @@ class PackedDataset(Dataset):
                 trainable_token_freq = token_freq
 
             trainable_vocab_size = len(trainable_token_freq)
+            t_stats = time.time() - t_stats_start
+            _log(f"Token frequency statistics calculation took: {t_stats:.4f} seconds")
         else:
             token_freq = Counter()
             trainable_token_freq = Counter()

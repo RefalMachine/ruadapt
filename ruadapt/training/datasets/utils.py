@@ -10,11 +10,14 @@ from typing import Dict, List, Optional, Set, Tuple
 import torch
 
 
-def _log(msg: str) -> None:
-    """Print only on rank 0."""
+def _log(msg: str, main_process_only: bool = True) -> None:
+    """Print log message, optionally filtering only to main process (rank 0)."""
     if torch.distributed.is_initialized():
-        if torch.distributed.get_rank() != 0:
+        rank = torch.distributed.get_rank()
+        if main_process_only and rank != 0:
             return
+        if rank != 0:
+            msg = f"[rank {rank}] {msg}"
     print(msg)
 
 
@@ -256,9 +259,9 @@ def ensure_tokenized(raw, tokenize_fn, num_proc, overwrite_cache, is_main_proces
 
     if not is_main_process:
         if distributed:
-            _log("[rank non-0] Waiting at barrier for cache...")
+            _log("Waiting at barrier for cache...", main_process_only=False)
             dist.barrier()
-            _log("[rank non-0] Cache ready, loading from cache...")
+            _log("Cache ready, loading from cache...", main_process_only=False)
         return raw.map(
             tokenize_fn,
             batched=True,

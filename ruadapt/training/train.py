@@ -40,6 +40,7 @@ from ruadapt.training.core.trainer import (
 )
 from ruadapt.training.datasets.factory import load_factory
 from ruadapt.training.datasets.debug import print_sample
+from ruadapt.utils.seed import set_random_seed
 
 
 def parse_config_from_json(config_path: str) -> MainConfig:
@@ -107,20 +108,16 @@ def _parse_training_config(raw: Dict[str, Any]) -> TrainingConfig:
 
 
 def _data_prep_only(cfg: MainConfig):
-    """Tokenize and cache dataset without loading model or training.
-
-    Only rank 0 does the work; other ranks wait at barriers.
-    After this, all ranks can load from cache instantly.
-    """
+    """Tokenize and cache dataset without loading full model."""
     from transformers import AutoTokenizer
-
-    if is_main_process():
-        print("=" * 60)
-        print("  DATA PREPARATION ONLY (no model, no training)")
-        print("=" * 60)
+    
+    # Initialize random seed for reproducibility in data prep
+    seed = getattr(cfg.training, "seed", 42)
+    set_random_seed(seed)
 
     tokenizer = AutoTokenizer.from_pretrained(
-        cfg.model.model_name_or_path, trust_remote_code=True
+        cfg.model.model_name_or_path,
+        trust_remote_code=cfg.model.trust_remote_code,
     )
 
     if not cfg.dataset_factory or not cfg.collator_factory:
@@ -160,6 +157,10 @@ def main(config: str, data_prep_only: bool = False):
     # Init distributed
     init_distributed()
 
+    # Initialize random seed globally for reproducibility across training libs (torch, numpy, random, etc)
+    seed = getattr(cfg.training, "seed", 42)
+    set_random_seed(seed)
+
     if data_prep_only:
         _data_prep_only(cfg)
         cleanup_distributed()
@@ -187,7 +188,8 @@ def main(config: str, data_prep_only: bool = False):
 
     # Print trainable summary
     if is_main_process():
-        summary = get_trainable_summary(model)
+        freeze_idx_val = cfg.freeze.freeze_idx if cfg.freeze.strategy == "embed_only" else None
+        summary = get_trainable_summary(model, freeze_idx=freeze_idx_val)
         print(
             f"Trainable: {summary['trainable']:,} / {summary['total']:,} "
             f"({summary['percentage']:.2f}%)"

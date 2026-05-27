@@ -42,8 +42,8 @@ def ensure_packed(tokenized, pack_fn, num_proc, overwrite_cache, is_main_process
     """Pack tokenized dataset via .map() with caching. Only main rank writes cache.
 
     Analogous to ensure_tokenized but for the packing + substitution step.
-    Uses num_proc=1 because substitution uses random.random() — multi-worker
-    would produce non-deterministic results across ranks.
+    Supports parallel num_proc >= 1 because the packing function uses batch index offsets
+    to ensure perfect determinism in random splits across all workers and ranks.
     """
     import torch.distributed as dist
 
@@ -52,23 +52,26 @@ def ensure_packed(tokenized, pack_fn, num_proc, overwrite_cache, is_main_process
 
     if not is_main_process:
         if distributed:
-            _log("[rank non-0] Waiting at barrier for pack cache...")
+            _log("Waiting at barrier for pack cache...", main_process_only=False)
             dist.barrier()
-            _log("[rank non-0] Pack cache ready, loading...")
+            _log("Pack cache ready, loading...", main_process_only=False)
         return tokenized.map(
             pack_fn,
             batched=True,
-            num_proc=1,
+            with_indices=True,
+            num_proc=num_proc,
             remove_columns=column_names,
             load_from_cache_file=True,
             desc="Packing (from cache)",
         )
 
-    _log("[rank 0] Packing dataset...")
+    print("1", flush=True)
+    _log(f"Packing dataset with num_proc={num_proc}...")
     result = tokenized.map(
         pack_fn,
         batched=True,
-        num_proc=1,
+        with_indices=True,
+        num_proc=num_proc,
         remove_columns=column_names,
         load_from_cache_file=not overwrite_cache,
         desc="Packing",
@@ -214,8 +217,9 @@ class UnifiedDatasetFactory:
             random_sub_ratio=random_sub_ratio,
         )
 
+        print("2", flush=True)
         packed = ensure_packed(
-            tokenized, pack_fn, num_proc=1,
+            tokenized, pack_fn, num_proc=num_proc,
             overwrite_cache=overwrite_cache,
             is_main_process=_is_rank_zero(),
         )
