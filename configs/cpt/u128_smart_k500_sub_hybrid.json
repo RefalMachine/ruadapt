@@ -1,0 +1,62 @@
+{
+  "model": {
+    "model_name_or_path": "/workdir/pipeline_test/unigram128/model_trimmed",
+    "torch_dtype": "bfloat16",
+    "attn_implementation": "flash_attention_2"
+  },
+  "data": {
+    "train_file": "/workdir/pipeline_test/unigram128/smart_k500_train.json",
+    "val_file": "/shared/data/data/pre-train/darulm_25_03_25/val.json",
+    "block_size": 4096,
+    "preprocessing_num_workers": 16,
+    "cache_dir": "/workdir/cache/dgx_llm",
+    "overwrite_cache": false,
+    "max_text_length": 50000000
+  },
+  "lora": {
+    "peft": false
+  },
+  "freeze": {
+    "strategy": "embed_only",
+    "freeze_idx": 248044
+  },
+  "unified_dataset": {
+    "natural_boundaries": true,
+    "compute_stats": false,
+    "fragment_ratio": 0.2,
+    "p_split": 0.3,
+    "substitution_method": "hybrid",
+    "trim_dir": "/workdir/pipeline_test/unigram128/trim",
+    "min_parent_freq_ratio": 3.0,
+    "random_sub_ratio": 0.1
+  },
+  "training": {
+    "output_dir": "/workdir/pipeline_test/unigram128/RuadaptQwen3.5-2B-Base-u128_trimmed_u128_smart_k500_sub_hybrid_fr0.2_ps0.3_4k_e2_lr3e4_bs128",
+    "per_device_train_batch_size": 2,
+    "per_device_eval_batch_size": 4,
+    "gradient_accumulation_steps": 16,
+    "num_train_epochs": 2,
+    "learning_rate": 3e-4,
+    "weight_decay": 0.0,
+    "embed_weight_decay": 0.0,
+    "warmup_ratio": 0.05,
+    "lr_scheduler_type": "cosine",
+    "wsd_constant_part": 0.85,
+    "logging_steps": 10,
+    "eval_steps": 500,
+    "eval_strategy": "steps",
+    "save_steps": 1000,
+    "save_strategy": "steps",
+    "save_total_limit": 1,
+    "bf16": true,
+    "optim": "adamw_torch",
+    "max_grad_norm": 1.0,
+    "seed": 42,
+    "gradient_checkpointing": false,
+    "dataloader_num_workers": 4,
+    "remove_unused_columns": false,
+    "report_to": ["tensorboard"]
+  },
+  "dataset_factory": "ruadapt.training.datasets.unified_factory.UnifiedDatasetFactory",
+  "collator_factory": "ruadapt.training.datasets.unified_factory.UnifiedCollatorFactory"
+}

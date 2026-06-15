@@ -1,4 +1,12 @@
-"""Token conversion, tokenizer property detection, and utility functions."""
+"""Token conversion, tokenizer property detection, and utility functions.
+
+Shared concepts for the new-tokens pipeline:
+  - freeze_idx: token ID boundary — IDs below are frozen base vocabulary
+  - special_ids: all tokens that should be excluded from training targets
+    (formally special + added tokens like free_token fillers)
+  - new_token_ids: IDs >= freeze_idx that are NOT special (trainable new tokens)
+  - filler_ids: added tokens that pad the vocab to 256-alignment (free_tokenN)
+"""
 
 from typing import Dict, List, Set
 
@@ -126,15 +134,72 @@ def get_first_diff_id(base_tokenizer_path: str, new_tokenizer_path: str) -> int:
 
 
 def get_special_token_ids(tokenizer) -> Set[int]:
-    """Extract all special token IDs including added tokens marked as special."""
+    """Extract all special token IDs including added tokens marked as special.
+
+    Also includes free_tokens and other non-special added tokens,
+    since they should be excluded from target vocabulary counts
+    (consistent with trim_tokenizer.py logic that excludes IDs > eos_id).
+    """
     special_ids = set()
 
     if hasattr(tokenizer, "all_special_ids") and tokenizer.all_special_ids:
         special_ids.update(tokenizer.all_special_ids)
 
+    # All added tokens (special=True or not) should be excluded.
+    # This covers free_tokens (<|free_token1|>, ...) which are added via
+    # add_tokens() with special=False but are still non-trainable fillers.
     if hasattr(tokenizer, "added_tokens_decoder"):
-        for t_id, added_token in tokenizer.added_tokens_decoder.items():
-            if added_token.special:
-                special_ids.add(t_id)
+        for t_id in tokenizer.added_tokens_decoder:
+            special_ids.add(t_id)
 
     return special_ids
+
+
+def get_filler_ids(tokenizer) -> Set[int]:
+    """Extract filler token IDs (free_tokenN and similar padding tokens).
+
+    These are added tokens whose content matches the ``<|free_tokenN|>`` pattern,
+    used to pad vocabulary size to a multiple of 256.
+    """
+    filler_ids: Set[int] = set()
+    if hasattr(tokenizer, "added_tokens_decoder"):
+        for t_id, token_info in tokenizer.added_tokens_decoder.items():
+            content = getattr(token_info, "content", "")
+            if "free_token" in content:
+                filler_ids.add(t_id)
+    return filler_ids
+
+
+def get_new_token_ids(tokenizer, freeze_idx: int) -> Set[int]:
+    """Get IDs of new (non-frozen, non-special) tokens.
+
+    These are tokens added during tokenizer extension that sit above
+    ``freeze_idx`` and are not special/filler tokens.  They are the
+    *trainable* vocabulary introduced by the extension.
+
+    Args:
+        tokenizer: HF tokenizer.
+        freeze_idx: Token IDs below this are frozen base vocabulary.
+
+    Returns:
+        Set of new token IDs.
+    """
+    special_ids = get_special_token_ids(tokenizer)
+    vocab_size = len(tokenizer.vocab) if hasattr(tokenizer, "vocab") else tokenizer.vocab_size
+    return set(range(freeze_idx, vocab_size)) - special_ids
+
+
+def get_trainable_ids(tokenizer, freeze_idx: int) -> Set[int]:
+    """Get all trainable token IDs (new tokens + any non-special above freeze_idx).
+
+    Equivalent to ``get_new_token_ids`` — kept as an alias for clarity in
+    training code where the ``trainable`` naming is more natural.
+
+    Args:
+        tokenizer: HF tokenizer.
+        freeze_idx: Token IDs below this are frozen base vocabulary.
+
+    Returns:
+        Set of trainable token IDs.
+    """
+    return get_new_token_ids(tokenizer, freeze_idx)

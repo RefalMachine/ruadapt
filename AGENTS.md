@@ -25,7 +25,7 @@ Tikhomirov, Chernyshev. "Impact of Tokenization on LLaMa Russian Adaptation" (ar
 
 ---
 
-## Project State (2026-05)
+## Project State (2026-06)
 
 **Migration complete.** Code consolidated from three sources into a single `ruadapt` package:
 
@@ -56,7 +56,7 @@ Old code moved to `deprecated/` for reference. llmtf_open submodule updated to l
 
 | Module | Purpose | Key entry points |
 |--------|---------|-----------------|
-| `ruadapt/tokenization/` | Tokenizer extension, replacement, shrinking, BPE tree | `core.py`, `replace.py`, `merges.py`, `bpe_tree.py` |
+| `ruadapt/tokenization/` | Tokenizer extension, replacement, shrinking, BPE tree, **trim** | `core.py`, `replace.py`, `merges.py`, `bpe_tree.py`, `trim.py`, `trim_model.py`, `utils.py` |
 | `ruadapt/initialization/` | Embedding initialization research | `data/build_bpe_dataset.py`, `head/train.py`, `eval/micro_cpt.py` |
 | `ruadapt/training/` | Unified training core (CPT/CLM/SFT) | `train.py` (CLI entrypoint) |
 | `ruadapt/ushanka/` | LEP — Layer Embedding Projection | `compose.py`, `merge.py`, `projection.py` |
@@ -102,7 +102,7 @@ See [STRUCTURE.md](STRUCTURE.md) for full directory tree and file descriptions.
 
 **Continue development.** Migration is complete (Stages 0–6). Next steps:
 
-1. Write remaining tests (initialization, ushanka)
+1. ~~Write remaining tests (initialization, ushanka)~~ — Done (2026-06-04): 56 initialization + 17 ushanka tests
 2. Run end-to-end pipeline validation
 3. Port SMPO trainer when preference training is needed
 4. Extend training core with DPO/KTO/CPO support

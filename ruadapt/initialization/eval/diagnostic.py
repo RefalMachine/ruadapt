@@ -93,15 +93,35 @@ def get_model_info(model_path, tokenizer):
         
     return info
 
+def collect_json_files(data_path):
+    """Return list of (label, filepath) from a file or directory path."""
+    if os.path.isfile(data_path):
+        label = os.path.splitext(os.path.basename(data_path))[0]
+        return [(label, data_path)]
+    elif os.path.isdir(data_path):
+        results = []
+        for fname in sorted(os.listdir(data_path)):
+            if fname.endswith(".json"):
+                label = os.path.splitext(fname)[0]
+                results.append((label, os.path.join(data_path, fname)))
+        return results
+    else:
+        print(f"Warning: {data_path} does not exist.")
+        return []
+
+
 def main():
-    # Определяем путь к данным относительно скрипта: ruadapt/tokenization/evaluation/data
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_data_dir = os.path.join(script_dir, "data")
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", required=True, help="Path to the model (and tokenizer)")
-    parser.add_argument("--data_dir", default=default_data_dir, help="Directory with lang.json files")
-    parser.add_argument("--ppl_langs", nargs='+', default=["rus", "eng"], help="Languages to compute PPL for (space separated)")
+    parser.add_argument("--data_dir", default=default_data_dir,
+                        help="Directory with lang.json files OR a single .json file")
+    parser.add_argument("--ppl_langs", nargs='+', default=None,
+                        help="Subset of languages/files for PPL (default: all files from data_dir)")
+    parser.add_argument("--tok_langs", nargs='+', default=None,
+                        help="Subset of languages/files for tokenization eval (default: all files from data_dir)")
     parser.add_argument("--num_docs", type=int, default=200, help="Number of documents to process for PPL")
     parser.add_argument("--max_tokens", type=int, default=4096, help="Max tokens per document for PPL")
     parser.add_argument("--skip_tok", action="store_true", help="Skip tokenization evaluation phase")
@@ -114,48 +134,55 @@ def main():
     print("Gathering model architecture and vocabulary info...")
     model_info = get_model_info(args.model_path, tokenizer)
 
-    # 1. Tokenization Quality (All languages)
-    # TODO FIX LOGIC
+    all_files = collect_json_files(args.data_dir)
+    if not all_files:
+        print(f"ERROR: no JSON files found at {args.data_dir}")
+        return
+
+    # Build lang filter sets from basenames (without .json)
+    available_labels = {label for label, _ in all_files}
+
+    def resolve_langs(lang_arg, fallback):
+        if lang_arg is None:
+            return fallback
+        resolved = []
+        for lang in lang_arg:
+            name = lang if lang.endswith('.json') else lang
+            label = os.path.splitext(name)[0]
+            if label in available_labels:
+                resolved.append(label)
+            else:
+                print(f"Warning: '{label}' not found in {args.data_dir}, skipping.")
+        return resolved
+
+    # 1. Tokenization Quality
     tok_results = {}
     if not args.skip_tok:
         print("\n--- Evaluating Tokenization Quality ---")
-        files = [f for f in os.listdir('/workdir/tokenizer_extension/evaluation/data') if f.endswith(".json")]
-        
-        for file in sorted(files):
-            # Hardcoded skip list to avoid hanging on massive datasets when tokenizing all json files in directory
-            if file in ["smart_k10_val.json", "smart_k10_train.json", "seq_10gb.json", "seq_1gb.json", "smart_k10_1gb.json", "smart_k50_1gb.json", "rus_large.json"]:
+        tok_labels = set(resolve_langs(args.tok_langs, [l for l, _ in all_files]))
+        for label, filepath in all_files:
+            if label not in tok_labels:
                 continue
-            lang = file.split(".")[0]
-            filepath = os.path.join('/workdir/tokenizer_extension/evaluation/data', file)
-            print(f"Tokenizing {lang}...")
+            print(f"Tokenizing {label}...")
             chars, tokens, cpt = evaluate_on_file(tokenizer, filepath)
-            tok_results[lang] = {"cpt": cpt, "tokens": tokens, "chars": chars}
+            tok_results[label] = {"cpt": cpt, "tokens": tokens, "chars": chars}
     else:
         print("\n--- Skipping Tokenization Quality ---")
 
     # 2. Perplexity (Selected languages)
-    print(f"\n--- Evaluating Perplexity for: {', '.join(args.ppl_langs)} ---")
+    ppl_labels = resolve_langs(args.ppl_langs, [l for l, _ in all_files])
+    print(f"\n--- Evaluating Perplexity for: {', '.join(ppl_labels)} ---")
     ppl_results = {}
     
-    for lang in args.ppl_langs:
-        # Check if lang is actually a direct filename
-        if lang.endswith('.json'):
-            filepath = os.path.join(args.data_dir, lang)
-            display_lang = lang.replace('.json', '')
-        else:
-            filepath = os.path.join(args.data_dir, f"{lang}.json")
-            display_lang = lang
-            
-        if not os.path.exists(filepath):
-            print(f"Warning: {filepath} not found. Skipping PPL for {display_lang}.")
-            continue
-            
-        print(f"\nComputing PPL for {display_lang}...")
+    ppl_file_map = {label: fp for label, fp in all_files}
+    for label in ppl_labels:
+        filepath = ppl_file_map[label]
+        print(f"\nComputing PPL for {label}...")
         try:
             ppl, total_tokens = evaluate_ppl_core(args.model_path, filepath, args.num_docs, args.max_tokens)
-            ppl_results[display_lang] = {"ppl": ppl, "tokens": total_tokens}
+            ppl_results[label] = {"ppl": ppl, "tokens": total_tokens}
         except Exception as e:
-            print(f"Failed to compute PPL for {display_lang}: {e}")
+            print(f"Failed to compute PPL for {label}: {e}")
 
     # 3. Generate Markdown Report
     print(f"\n--- Generating Report: {args.output_report} ---")

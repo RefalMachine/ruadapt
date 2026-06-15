@@ -22,7 +22,7 @@ pip install -e .
 
 | Module | Purpose |
 |--------|---------|
-| `ruadapt/tokenization/` | Tokenizer extension, replacement, shrinking |
+| `ruadapt/tokenization/` | Tokenizer extension, replacement, shrinking, **trimming** |
 | `ruadapt/initialization/` | Embedding initialization (BPE decomposition, MLP head training) |
 | `ruadapt/training/` | Unified training core (CPT, CLM, SFT) |
 | `ruadapt/ushanka/` | LEP — Layer Embedding Projection |
@@ -43,11 +43,28 @@ python -m ruadapt.tokenization.core \
 ### Initialize embeddings (mean baseline)
 
 ```bash
-python -m ruadapt.tokenization.replace \
+python -m ruadapt.tokenization.cli \
     --model_name_or_path /path/to/base_model \
     --new_tokenizer_path /path/to/extended_tokenizer \
     --output_path /path/to/output \
     --mode mean
+```
+
+### Trim tokenizer (freq-aware pruning)
+
+```bash
+# 1. Trim tokenizer: remove rare terminal tokens, reindex
+python -m ruadapt.tokenization.trim \
+    --model_path /path/to/model \
+    --data_path /path/to/train.jsonl \
+    --output_dir /path/to/trimmed \
+    --K 50
+
+# 2. Resize model embeddings to match trimmed tokenizer
+python -m ruadapt.tokenization.trim_model \
+    --model_path /path/to/model \
+    --trim_dir /path/to/trimmed \
+    --output_dir /path/to/trimmed_model
 ```
 
 ### Train MLP head for embedding initialization
@@ -86,7 +103,13 @@ python scripts/fix_config.py \
     --adapted /path/to/adapted_model
 ```
 
-## Documentation
+## Testing
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v            # all 174 tests
+pytest tests/ -v -m "not slow"  # skip slow integration tests
+```
 
 - [AGENTS.md](AGENTS.md) — Working rules, project state, design principles
 - [STRUCTURE.md](STRUCTURE.md) — Full directory tree with file descriptions

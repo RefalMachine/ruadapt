@@ -77,12 +77,12 @@ if __name__ == '__main__':
     current_len = len(tokenizer_new)
     pad_needed = (target_multiple - (current_len % target_multiple)) % target_multiple
     
-    # СНАЧАЛА добавляем токены и ресайзим матрицы
+    # Добавляем padding токены в токенизатор, но НЕ ресайзим модель —
+    # reinit сам создаст новую матрицу нужного размера
     if pad_needed > 0:
         print(f"Padding vocabulary from {current_len} to {current_len + pad_needed} (+{pad_needed} free tokens)")
         new_tokens = [f"<|free_token{i+1}|>" for i in range(pad_needed)]
         tokenizer_new.add_tokens(new_tokens)
-        model.resize_token_embeddings(len(tokenizer_new))
 
     # Переинициализация весов
     if args.mode == 'mlp':

@@ -218,6 +218,78 @@ def targeted_split(
     return result
 
 
+def targeted_split_with_labels(
+    token_str: str,
+    merge_tree: Dict[str, Tuple[str, str]],
+    subtree_has_rare_set: Set[str],
+    p_stop: float,
+    safe_tokens: Set[str],
+) -> Tuple[List[str], List[str]]:
+    """Split token to expose rare children, returning (subwords, labels).
+
+    Label logic mirrors recursive_split_with_labels:
+    - First subword of each split: label = parent token
+    - Other subwords: label = themselves
+    """
+    words: List[str] = []
+    labels: List[str] = []
+    _targeted_split_impl(token_str, merge_tree, subtree_has_rare_set, p_stop, safe_tokens, words, labels)
+    return words, labels
+
+
+def _targeted_split_impl(
+    token_str: str,
+    merge_tree: Dict[str, Tuple[str, str]],
+    subtree_has_rare_set: Set[str],
+    p_stop: float,
+    safe_tokens: Set[str],
+    words_out: List[str],
+    labels_out: List[str],
+) -> None:
+    """In-place recursive targeted split — appends to words_out/labels_out."""
+    if token_str not in merge_tree:
+        words_out.append(token_str)
+        labels_out.append(token_str)
+        return
+
+    if random.random() < p_stop:
+        words_out.append(token_str)
+        labels_out.append(token_str)
+        return
+
+    left, right = merge_tree[token_str]
+
+    if safe_tokens is not None:
+        if left not in safe_tokens or right not in safe_tokens:
+            words_out.append(token_str)
+            labels_out.append(token_str)
+            return
+
+    left_has_rare = left in subtree_has_rare_set
+    right_has_rare = right in subtree_has_rare_set
+
+    if not left_has_rare and not right_has_rare:
+        words_out.append(token_str)
+        labels_out.append(token_str)
+        return
+
+    start = len(words_out)
+
+    if left_has_rare:
+        _targeted_split_impl(left, merge_tree, subtree_has_rare_set, p_stop, safe_tokens, words_out, labels_out)
+    else:
+        words_out.append(left)
+        labels_out.append(left)
+
+    if right_has_rare:
+        _targeted_split_impl(right, merge_tree, subtree_has_rare_set, p_stop, safe_tokens, words_out, labels_out)
+    else:
+        words_out.append(right)
+        labels_out.append(right)
+
+    labels_out[start] = token_str
+
+
 def _try_targeted_substitute(
     token_id: int,
     token_str: Optional[str],
@@ -243,14 +315,11 @@ def _try_targeted_substitute(
         return None
 
     p_stop = 1.0 - p_split
-    subwords = targeted_split(
+    subwords, labels = targeted_split_with_labels(
         token_str, merge_tree, subtree_has_rare_set, p_stop, safe_tokens,
     )
     if len(subwords) <= 1:
         return None
-
-    # Build labels: first subword gets parent, others get themselves
-    labels = [token_str] + subwords[1:]
 
     sub_ids = []
     label_ids = []

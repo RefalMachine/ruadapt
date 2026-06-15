@@ -6,7 +6,7 @@ import multiprocessing as mp
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from ruadapt.tokenization.utils import get_first_diff_id, get_special_token_ids
+from ruadapt.tokenization.utils import get_first_diff_id, get_special_token_ids, get_new_token_ids
 
 # --- WORKER LOGIC ---
 WORKER_TOKENIZER = None
@@ -97,7 +97,7 @@ def build_smart_dataset_local(
     special_ids = get_special_token_ids(tokenizer)
     
     total_vocab_size = len(tokenizer)
-    target_tokens = set(range(first_diff_id, total_vocab_size)) - special_ids
+    target_tokens = get_new_token_ids(tokenizer, first_diff_id)
     
     num_target = len(target_tokens)
     total_target_hits = num_target * k_coverage

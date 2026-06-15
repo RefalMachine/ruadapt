@@ -18,17 +18,20 @@ devel/ruadapt/
 ├── ruadapt/                                # Main installable package
 │   ├── __init__.py                         # __version__
 │   │
-│   ├── tokenization/                       # Tokenizer manipulation + BPE tree
-│   │   ├── __init__.py
-│   │   ├── core.py                         # BPE learning, vocab injection (from extend_tokenizer.py)
-│   │   ├── replace.py                      # Embedding reinit: mean, wmean, random (from replace_tokenizer.py)
-│   │   ├── shrink.py                       # Vocab truncation (from shrink_tokenizer.py)
-│   │   ├── merges.py                       # BPE merge learning, tiktoken format (from add_merges_fast.py)
-│   │   ├── convert.py                      # Format converters: tiktoken↔HF, vocab extraction
-│   │   ├── bpe_tree.py                     # BPE merge tree — shared with training.datasets
-│   │   ├── utils.py                        # Token conversion, tokenizer property detection
-│   │   ├── cli.py                          # CLI wrappers (from run_replace_tokenizer.py)
-│   │   ├── train_spm.py                    # SentencePiece training wrapper
+    │   ├── tokenization/                       # Tokenizer manipulation + BPE tree
+    │   │   ├── __init__.py
+    │   │   ├── core.py                         # BPE learning, vocab injection (from extend_tokenizer.py)
+    │   │   ├── replace.py                      # Embedding reinit: mean, wmean, random (from replace_tokenizer.py)
+    │   │   ├── replace_batched.py              # Batched reinit with MLP head support
+    │   │   ├── shrink.py                       # Vocab truncation (from shrink_tokenizer.py)
+    │   │   ├── merges.py                       # BPE merge learning, tiktoken format (from add_merges_fast.py)
+    │   │   ├── convert.py                      # Format converters: tiktoken↔HF, vocab extraction
+    │   │   ├── bpe_tree.py                     # BPE merge tree — shared with training.datasets
+    │   │   ├── utils.py                        # Token conversion, tokenizer properties, new-token helpers
+    │   │   ├── cli.py                          # CLI wrappers (from run_replace_tokenizer.py)
+    │   │   ├── trim.py                         # Cascade-trim rare terminal tokens from vocab
+    │   │   ├── trim_model.py                   # Resize model embeddings after trimming
+    │   │   ├── train_spm.py                    # SentencePiece training wrapper
 │   │   └── evaluation/                     # Tokenizer quality evaluation
 │   │       ├── evaluate_tokenizer.py       # Chars-per-token across languages
 │   │       ├── compare_tokenizers.py       # Side-by-side tokenizer comparison
@@ -168,9 +171,9 @@ devel/ruadapt/
 ├── deepspeed_configs/                      # DeepSpeed ZeRO configs
 │   └── ds_z1_config.json
 │
-├── scripts/                                # Utility scripts
-│   ├── trim_tokenizer.py                   # Cascade trim rare tokens (from dgx_llm)
-│   ├── trim_model.py                       # Resize embeddings after trim (from dgx_llm)
+    ├── scripts/                                # Utility scripts
+    │   ├── trim_tokenizer.py                   # Thin wrapper → ruadapt.tokenization.trim
+    │   ├── trim_model.py                       # Thin wrapper → ruadapt.tokenization.trim_model
 │   ├── analyze_targeted_substitution.py    # Substitution analysis (from dgx_llm)
 │   ├── fix_config.py                       # Fix adapted model config for VLM eval (Qwen3.5)
 │   ├── fix_configs.sh                      # Batch fix_config runner
@@ -181,33 +184,29 @@ devel/ruadapt/
 │   ├── test_model_reinit.py                # Model reinit test utility
 │   └── test_train_tokenization.py          # Train tokenization test utility
 │
-├── tests/                                  # Test suite
-│   ├── conftest.py                         # Shared fixtures (small tokenizer, sample texts)
-│   ├── tokenization/
-│   │   ├── test_core.py                    # BPE learning, vocab injection
-│   │   ├── test_replace.py                 # Embedding reinit
-│   │   ├── test_merges.py                  # tiktoken merge learning
-│   │   ├── test_utils.py                   # Token conversion, properties
-│   │   ├── test_bpe_tree.py                # BPE merge tree
-│   │   └── test_convert.py                 # Format converters
-│   ├── initialization/
-│   │   ├── test_bpe_tree.py                # (shared with tokenization, import from there)
-│   │   ├── test_data_builders.py           # BPE dataset, smart dataset builders
-│   │   ├── test_metrics.py                 # FastMetrics loss functions
-│   │   ├── test_streamer.py                # FilteredDatasetStreamer
-│   │   └── test_model_utils.py             # load_causal_lm, resolve_model_class
-│   ├── training/
-│   │   ├── conftest.py                     # Training fixtures
-│   │   ├── test_config.py                  # Config parsing
-│   │   ├── test_utils.py                   # Dataset utilities
-│   │   ├── test_bpe_tree.py                # BPE tree (import from tokenization)
-│   │   ├── test_collators.py               # Collators
-│   │   ├── test_unified_dataset.py         # Packed dataset
-│   │   ├── test_factory.py                 # Factory protocol
-│   │   ├── test_stats.py                   # Statistics
-│   │   └── test_integration.py             # End-to-end pipeline
-│   └── ushanka/
-│       └── test_compose.py                 # LEP composition
+    ├── tests/                                  # Test suite (174 tests total)
+    │   ├── conftest.py                         # Shared fixtures (small tokenizer, sample texts)
+    │   ├── tokenization/
+    │   │   ├── test_core.py                    # BPE learning, vocab injection
+    │   │   ├── test_replace.py                 # Embedding reinit
+    │   │   ├── test_merges.py                  # tiktoken merge learning
+    │   │   ├── test_utils.py                   # Token conversion, properties
+    │   │   ├── test_bpe_tree.py                # BPE merge tree
+    │   │   └── test_convert.py                 # Format converters
+    │   ├── initialization/
+    │   │   └── test_initialization.py          # FastMetrics, LayerAttentionHead, BPE tree, utils (56 tests)
+    │   ├── training/
+    │   │   ├── conftest.py                     # Training fixtures
+    │   │   ├── test_config.py                  # Config parsing
+    │   │   ├── test_utils.py                   # Dataset utilities
+    │   │   ├── test_bpe_tree.py                # BPE tree (import from tokenization)
+    │   │   ├── test_collators.py               # Collators
+    │   │   ├── test_unified_dataset.py         # Packed dataset
+    │   │   ├── test_factory.py                 # Factory protocol
+    │   │   ├── test_stats.py                   # Statistics
+    │   │   └── test_integration.py             # End-to-end pipeline
+    │   └── ushanka/
+    │       └── test_ushanka.py                 # Projection, merge, init, end-to-end LEP (17 tests)
 │
 └── data/                                   # Sample data for tests
     ├── sample_train.jsonl
@@ -228,7 +227,9 @@ Handles all tokenizer manipulation: extending vocabularies with new tokens, repl
 - `merges.py`: Fast BPE merge learning in tiktoken format (heap-based)
 - `convert.py`: Format converters (tiktoken ↔ HF, vocab extraction, freq list)
 - `bpe_tree.py`: `build_merge_tree()`, `recursive_split()` — shared with `training.datasets`
-- `utils.py`: `get_tokenizer_properties()`, `convert_token_universal()`, `get_first_diff_id()`
+- `utils.py`: `get_tokenizer_properties()`, `convert_token_universal()`, `get_first_diff_id()`, `get_special_token_ids()`, `get_new_token_ids()`, `get_filler_ids()`, `get_trainable_ids()`
+- `trim.py`: `classify_tokens()`, `cascade_remove()`, `rebuild_tokenizer()`, `trim_tokenizer()` — freq-aware vocab pruning
+- `trim_model.py`: `build_new_embeddings()`, `trim_model()` — resize model after trimming
 - `cli.py`: CLI entrypoint for tokenizer replacement
 
 ### `ruadapt/initialization/`
@@ -358,6 +359,12 @@ python -m ruadapt.tokenization.core --config configs/tokenizer/qwen_extend.json
 
 # Tokenizer replacement (embedding init)
 python -m ruadapt.tokenization.cli --model_path MODEL --tokenizer_path TOK --mode mean
+
+# Tokenizer trimming (freq-aware pruning)
+python -m ruadapt.tokenization.trim --model_path MODEL --data_path DATA --output_dir OUT
+
+# Model resize after trimming
+python -m ruadapt.tokenization.trim_model --model_path MODEL --trim_dir TRIM --output_dir OUT
 
 # Head training
 python -m ruadapt.initialization.head.train --cache_dir cache/ --output head.pt

@@ -349,3 +349,28 @@ def cli_convert_hf_vocab_to_freq_list():
     data = ["\t".join(d) for d in data]
     with codecs.open(args.output_path, "w", "utf-8") as file:
         file.write("\n".join(data))
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m ruadapt.tokenization.convert <subcommand> [args]")
+        print("Subcommands: cli_extract_vocab, cli_expand_tiktoken, cli_convert_hf_vocab_to_freq_list")
+        sys.exit(1)
+
+    subcommand = sys.argv[1]
+    sys.argv = [sys.argv[0]] + sys.argv[2:]
+
+    dispatch = {
+        "cli_extract_vocab": cli_extract_vocab,
+        "cli_expand_tiktoken": cli_expand_tiktoken,
+        "cli_convert_hf_vocab_to_freq_list": cli_convert_hf_vocab_to_freq_list,
+    }
+
+    if subcommand not in dispatch:
+        print(f"Unknown subcommand: {subcommand}")
+        print(f"Available: {', '.join(dispatch.keys())}")
+        sys.exit(1)
+
+    dispatch[subcommand]()
