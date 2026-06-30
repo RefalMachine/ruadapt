@@ -1,6 +1,7 @@
 """Dataset building blocks for ruadapt.training."""
 
 from ruadapt.training.datasets.collators import (
+    DynamicPadCollator,
     PackedCollatorWithMask,
     SimpleStackCollator,
 )
@@ -8,6 +9,7 @@ from ruadapt.training.datasets.factory import CollatorFactory, DatasetFactory, l
 from ruadapt.training.datasets.in_memory import InMemoryPaddedDataset
 
 __all__ = [
+    "DynamicPadCollator",
     "PackedCollatorWithMask",
     "SimpleStackCollator",
     "CollatorFactory",

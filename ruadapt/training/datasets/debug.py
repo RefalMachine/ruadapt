@@ -67,10 +67,13 @@ def print_sample(split_name: str, dataset, tokenizer, max_tokens: int = 200, num
                         inp_str = repr(tokenizer.decode([inp_id], skip_special_tokens=False))
                     except Exception:
                         inp_str = "?"
-                    try:
-                        lbl_str = repr(tokenizer.decode([lbl_id], skip_special_tokens=False))
-                    except Exception:
-                        lbl_str = "?"
+                    if lbl_id == -100:
+                        lbl_str = "MASKED"
+                    else:
+                        try:
+                            lbl_str = repr(tokenizer.decode([lbl_id], skip_special_tokens=False))
+                        except Exception:
+                            lbl_str = "?"
                     print(f"    {pos:>4}  {inp_id:>8}  {lbl_id:>8}  {inp_str:>15}  {lbl_str:>15}")
                 if len(subs) > 30:
                     print(f"    ... and {len(subs) - 30} more")
@@ -82,7 +85,12 @@ def print_sample(split_name: str, dataset, tokenizer, max_tokens: int = 200, num
                 print(f"    {decoded_input}")
 
                 print(f"\n  decoded labels (first {n}):")
-                decoded_labels = tokenizer.decode(labels[:n], skip_special_tokens=False)
+                # Filter out -100 (masked labels) before decoding
+                filtered_labels = [l for l in labels[:n] if l != -100]
+                if filtered_labels:
+                    decoded_labels = tokenizer.decode(filtered_labels, skip_special_tokens=False)
+                else:
+                    decoded_labels = "(all masked)"
                 if len(decoded_labels) > 2000:
                     decoded_labels = decoded_labels[:2000] + "... (truncated)"
                 print(f"    {decoded_labels}")

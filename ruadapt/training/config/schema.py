@@ -104,6 +104,68 @@ class TrainingConfig(TrainingArguments):
 
 
 @dataclass
+class SFTConfig:
+    """Config for SFT (Supervised Fine-Tuning) dataset pipeline.
+
+    Special token IDs for boundary detection:
+    - im_start_token_id: Token ID for sequence start marker (e.g. 291347 for Qwen3.5)
+    - im_end_token_id: Token ID for sequence end marker (e.g. 291348 for Qwen3.5)
+    - think_start_token_id: Token ID for think block start (e.g. 291370 for Qwen3.5)
+    - think_end_token_id: Token ID for think block end (e.g. 291371 for Qwen3.5)
+    - assistant_role_string: String whose first encoded token is used as assistant role ID
+    - newline_token_id: Token ID for newline character (e.g. 198 for Qwen3.5)
+
+    These must be specified in config because some special tokens (like im_start/im_end)
+    are not reliably detectable via tokenizer.convert_tokens_to_ids() on all models.
+    """
+
+    max_tokens_count: int = field(
+        default=2048,
+        metadata={"help": "Max token length for SFT conversations"},
+    )
+    only_target_loss: bool = field(
+        default=True,
+        metadata={"help": "Mask non-assistant tokens in labels (only compute loss on assistant responses)"},
+    )
+    sample_rate: float = field(
+        default=1.0,
+        metadata={"help": "Fraction of data to use (0.0-1.0). Random subsampling."},
+    )
+    mask_think_block: bool = field(
+        default=False,
+        metadata={"help": "Mask empty THINK blocks in labels. Only masks when think content is whitespace."},
+    )
+    dynamic_padding: bool = field(
+        default=True,
+        metadata={"help": "Pad to max length in batch (True) vs global max_length (False)"},
+    )
+    pad_to_multiple_of: int = field(
+        default=8,
+        metadata={"help": "Pad sequence length to nearest multiple of this value"},
+    )
+    im_start_token_id: Optional[int] = field(
+        default=None,
+        metadata={"help": "Token ID for sequence start marker. Required for assistant boundary detection."},
+    )
+    im_end_token_id: Optional[int] = field(
+        default=None,
+        metadata={"help": "Token ID for sequence end marker."},
+    )
+    think_start_token_id: Optional[int] = field(
+        default=None,
+        metadata={"help": "Token ID for think block start marker."},
+    )
+    think_end_token_id: Optional[int] = field(
+        default=None,
+        metadata={"help": "Token ID for think block end marker."},
+    )
+    assistant_role_string: str = field(
+        default="assistant",
+        metadata={"help": "String whose first encoded token is the assistant role ID in boundary pattern"},
+    )
+
+
+@dataclass
 class UnifiedDatasetConfig:
     """Config for PackedDataset (CPT/CLM/target substitution)."""
 
@@ -165,6 +227,10 @@ class MainConfig:
     unified_dataset: Optional[UnifiedDatasetConfig] = field(
         default=None,
         metadata={"help": "Unified dataset config (CPT/CLM/target substitution)"},
+    )
+    sft: Optional[SFTConfig] = field(
+        default=None,
+        metadata={"help": "SFT dataset config (chat-template tokenization, masking)"},
     )
     dataset_factory: Optional[str] = field(
         default=None,

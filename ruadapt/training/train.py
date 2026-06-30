@@ -22,6 +22,7 @@ from ruadapt.training.config.schema import (
     LoRAConfig,
     MainConfig,
     ModelConfig,
+    SFTConfig,
     TrainingConfig,
     UnifiedDatasetConfig,
 )
@@ -63,7 +64,7 @@ def parse_config_from_json(config_path: str) -> MainConfig:
     # Validate top-level keys
     known_keys = {
         "model", "data", "lora", "freeze", "training",
-        "unified_dataset", "dataset_factory", "collator_factory",
+        "unified_dataset", "sft", "dataset_factory", "collator_factory",
     }
     unknown = set(raw.keys()) - known_keys
     if unknown:
@@ -86,6 +87,10 @@ def parse_config_from_json(config_path: str) -> MainConfig:
     ud_raw = raw.get("unified_dataset")
     ud_config = UnifiedDatasetConfig(**ud_raw) if ud_raw else None
 
+    # SFT config (optional)
+    sft_raw = raw.get("sft")
+    sft_config = SFTConfig(**sft_raw) if sft_raw else None
+
     return MainConfig(
         model=model_config,
         data=data_config,
@@ -93,6 +98,7 @@ def parse_config_from_json(config_path: str) -> MainConfig:
         freeze=freeze_config,
         training=training_config,
         unified_dataset=ud_config,
+        sft=sft_config,
         dataset_factory=raw.get("dataset_factory"),
         collator_factory=raw.get("collator_factory"),
     )
