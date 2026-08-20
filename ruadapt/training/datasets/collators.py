@@ -3,6 +3,7 @@
 - SimpleStackCollator: stacks pre-padded tensors (for InMemoryPaddedDataset)
 - PackedCollatorWithMask: stacks input_ids and labels (for packed datasets)
 - DynamicPadCollator: pads to max length in batch (for SFT with variable-length sequences)
+- PackedSFTCollator: stacks fixed-length packed SFT chunks (strict document packing)
 """
 
 from typing import Dict, List
@@ -105,3 +106,42 @@ class DynamicPadCollator:
             "labels": labels,
             "attention_mask": attention_mask,
         }
+
+
+class PackedSFTCollator:
+    """Stack fixed-length packed SFT chunks (strict document packing).
+
+    Chunks are pre-packed by the dataset factory: every chunk has exactly
+    pack_chunk_size tokens with position_ids reset per document, int32 seq_idx
+    (document id per token) and int32 cu_seq_lens_q (cumulative segment lengths
+    including the pad-tail segment). No attention_mask: packing isolation relies
+    on position_ids (flash varlen path) + seq_idx/cu_seqlens (GatedDeltaNet).
+
+    IMPORTANT: the dataset must be consumed with TrainingArguments
+    remove_unused_columns=false, otherwise HF Trainer silently drops the
+    seq_idx/cu_seq_lens_q columns (they are not in model.forward signature).
+    """
+
+    REQUIRED_KEYS = ("input_ids", "labels", "position_ids", "seq_idx", "cu_seq_lens_q")
+
+    def __call__(self, features: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        if len(features) != 1:
+            raise ValueError(
+                "PackedSFTCollator requires per_device_train_batch_size=1: FLA "
+                "chunk kernels accept cu_seqlens only in flattened batch_size=1 form."
+            )
+        feature = features[0]
+        batch: Dict[str, torch.Tensor] = {}
+        for key in self.REQUIRED_KEYS:
+            dtype = torch.int32 if key in ("seq_idx", "cu_seq_lens_q") else torch.long
+            v = feature[key]
+            if not isinstance(v, torch.Tensor):
+                v = torch.tensor(v, dtype=dtype)
+            else:
+                v = v.to(dtype)
+            if key == "cu_seq_lens_q":
+                v = v.reshape(-1)  # FLA expects 1D cu_seqlens
+            else:
+                v = v.reshape(1, -1)
+            batch[key] = v
+        return batch

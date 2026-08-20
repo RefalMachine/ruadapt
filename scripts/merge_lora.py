@@ -3,6 +3,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from peft import PeftConfig, PeftModel
 import os
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
 
 def if_lora(model_dir):
     adapter_config_exists = os.path.exists(os.path.join(model_dir, 'adapter_config.json'))
@@ -16,7 +17,6 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         base_model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            load_in_8bit=False,
             torch_dtype=torch.bfloat16,
             device_map='cpu',
         )
@@ -46,9 +46,8 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
     #generation_config = GenerationConfig.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    base_model = Qwen3_5ForConditionalGeneration.from_pretrained(
         base_model_path,
-        load_in_8bit=False,
         torch_dtype=torch.bfloat16,
         device_map='cpu',
     )
@@ -58,7 +57,7 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
         base_model, model_name, torch_dtype=torch.bfloat16, device_map='cpu', config=config
     )
     
-    if config.modules_to_save is not None and 'lm_head' in config.modules_to_save: 
+    if config.modules_to_save is not None and 'lm_head' in config.modules_to_save and alpha_scale != 1.0: 
         print(lora_model.base_model.model.lm_head.original_module.weight[0])
         print(lora_model.base_model.model.lm_head.modules_to_save['default'].weight[0])
         with torch.no_grad():
@@ -68,19 +67,19 @@ def merge_lora(model_name: str, output_path: str, device_map: str = "auto", alph
 
     lora_model = lora_model.merge_and_unload()
     lora_model.train(False)
-
+    print(lora_model)
     #lora_model.generation_config = generation_config
-    print(lora_model.model.embed_tokens.weight[0])
+    print(lora_model.model.language_model.embed_tokens.weight[0])
     print(lora_model.lm_head.weight[0])
     print(base_model.config.tie_word_embeddings)
     print(config.modules_to_save)
-    if config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
+    if config.modules_to_save is not None and 'lm_head' in config.modules_to_save and alpha_scale != 1.0:
         with torch.no_grad():
             lora_model.lm_head.weight.copy_(new_embeds)
             if base_model.config.tie_word_embeddings:
                 lora_model.model.embed_tokens.weight = lora_model.lm_head.weight
 
-    print(lora_model.model.embed_tokens.weight[0])
+    print(lora_model.model.language_model.embed_tokens.weight[0])
     print(lora_model.lm_head.weight[0])
 
     lora_model.save_pretrained(output_path)

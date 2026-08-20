@@ -1,5 +1,11 @@
 # Migration and Refactoring Plan
 
+> **ARCHIVE (kept for reference, 2026-08-14).** All stages (0–6) are complete;
+> every checkbox in this document is closed. The package structure it describes
+> is the current one — see [STRUCTURE.md](STRUCTURE.md) for the live tree and
+> [AGENTS.md](AGENTS.md) for the current project state and goals. No further
+> action is expected from this plan.
+
 ## Overview
 
 **Migration complete (2026-05).** Code consolidated from three sources into a single `ruadapt` package — research-first, but well-structured and convenient for all pipeline stages.

@@ -1,0 +1,5 @@
+python -m ruadapt.utils.adapter --input_dir /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8 --base_model Qwen/Qwen3.5-27B --verify
+python scripts/merge_lora.py /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8 /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8_merged
+python scripts/merge_lora.py /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8 /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8_apc1.5_merged --alpha_scale 1.5
+python scripts/merge_lora.py /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8 /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8_apc2.0_merged --alpha_scale 2.0
+python scripts/merge_lora.py /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8 /workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr5e-4_e3_bs32_packed_4gpu_v9fp8_apc2.5_merged --alpha_scale 2.5

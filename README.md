@@ -107,7 +107,7 @@ python scripts/fix_config.py \
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v            # all 174 tests
+pytest tests/ -v            # all 140 tests
 pytest tests/ -v -m "not slow"  # skip slow integration tests
 ```
 

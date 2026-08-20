@@ -25,14 +25,28 @@ class UnifiedTrainer(Trainer):
     - Correct FSDP checkpoint saving via summon_full_params
     - Differential weight decay: embeddings get embed_weight_decay,
       other trainable params get global weight_decay
+    - Optional separate eval collator (eval_collator kwarg): train and eval
+      dataloaders may use different collation (e.g. packed train, dynamic-pad eval)
     - Works with FSDP, DDP, DeepSpeed, and single GPU
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, eval_collator=None, **kwargs):
         # transformers >= 5.x renamed 'tokenizer' to 'processing_class'
         if "tokenizer" in kwargs and "processing_class" not in kwargs:
             kwargs["processing_class"] = kwargs.pop("tokenizer")
         super().__init__(*args, **kwargs)
+        self.eval_collator = eval_collator
+
+    def get_eval_dataloader(self, eval_dataset=None):
+        """Build eval dataloader, optionally with a dedicated eval collator."""
+        if self.eval_collator is None:
+            return super().get_eval_dataloader(eval_dataset)
+        orig_collator = self.data_collator
+        self.data_collator = self.eval_collator
+        try:
+            return super().get_eval_dataloader(eval_dataset)
+        finally:
+            self.data_collator = orig_collator
 
     def create_optimizer(self, model=None):
         """Create optimizer with differential weight decay groups.
@@ -214,6 +228,46 @@ class EvaluateFirstStepCallback(TrainerCallback):
     ):
         if state.global_step == 0:
             control.should_evaluate = True
+        return control
+
+
+class LigerCheckCallback(TrainerCallback):
+    """Print liger patch status at train start (rank 0).
+
+    Liger is applied by HF Trainer inside train() (after __init__), so the
+    check must run in on_train_begin. Expected values for Qwen3.5:
+    base forward qualname starts with 'lce_forward', layer-0 MLP reports
+    'LigerQwen3MoeSwiGLUMLP'.
+    """
+
+    def on_train_begin(
+        self,
+        args: Any,
+        state: TrainerState,
+        control: TrainerControl,
+        model: Any = None,
+        **kwargs,
+    ):
+        if args.process_index != 0 or model is None:
+            return control
+        unwrapped = model
+        while hasattr(unwrapped, "module"):
+            unwrapped = unwrapped.module
+        base = unwrapped.get_base_model() if hasattr(unwrapped, "get_base_model") else unwrapped
+        fwd_name = getattr(getattr(base, "forward", None), "__qualname__", "?")
+        layers = None
+        for attr_path in ("model.layers", "model.language_model.layers"):
+            obj = base
+            try:
+                for attr in attr_path.split("."):
+                    obj = getattr(obj, attr)
+                layers = obj
+                break
+            except AttributeError:
+                continue
+        mlp_name = layers[0].mlp._get_name() if layers else "?"
+        print(f"[liger-check] base forward: {fwd_name}")
+        print(f"[liger-check] layer0 mlp: {mlp_name}")
         return control
 
 

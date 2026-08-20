@@ -9,9 +9,13 @@
 devel/ruadapt/
 ├── pyproject.toml                          # Package metadata, dependencies, entry points
 ├── README.md                               # Project overview
-├── AGENTS.md                               # Agent working rules and project context
+├── AGENTS.md                               # Agent working rules and project context (entry point)
 ├── STRUCTURE.md                            # This file
-├── MIGRATION_AND_REFACTORING_PLAN.md       # Migration status and plan
+├── PERF_PLAN.md                            # Active SFT speed plan + hardware/memory/fill facts
+├── FP8.md                                  # fp8 storage of the frozen base: design, merge, how to run
+├── FP8_REVIEW.md                           # 2026-08-14 review: measurements behind PERF_PLAN
+├── PIPELINE_TEST_PLAN.md                   # End-to-end validation plan (2B research path, open)
+├── MIGRATION_AND_REFACTORING_PLAN.md       # Archive: completed migration
 ├── .gitignore
 ├── .gitmodules                             # llmtf_open submodule config
 │
@@ -123,10 +127,11 @@ devel/ruadapt/
 │   │   ├── vllm.py                         # vLLM-based batch generation (from infer_vllm.py)
 │   │   └── utils.py                        # Re-exports from ruadapt.utils.io
 │   │
-│   └── utils/                              # Shared utilities
+ │   └── utils/                              # Shared utilities
 │       ├── __init__.py
 │       ├── io.py                           # read_jsonl, write_jsonl, read_json
 │       ├── seed.py                         # set_random_seed
+│       ├── adapter.py                      # fix text_only LoRA keys for multimodal merge (CLI)
 │       └── model_utils.py                  # load_causal_lm, resolve_model_class (consolidated)
 │
 ├── deprecated/                             # Old code (reference only, not for import)
@@ -164,9 +169,15 @@ devel/ruadapt/
 │   └── pipeline_configs/                   # Old pipeline step configs (19 JSONs)
 │
 ├── configs/                                # Training configs (dgx_llm JSON format)
+│   ├── sft_v1..v7.json                     # SFT history: dense, no packing
+│   ├── sft_v8*.json                        # SFT with packing (bf16, grad ckpt)
+│   ├── sft_v9_fp8_{2,4}gpu.json            # SFT with fp8 storage, no grad ckpt (current)
 │   ├── cpt/                                # CPT configs
-│   ├── sft/                                # SFT configs
-│   └── smoke/                              # Smoke test configs (fast, small)
+│   └── smoke/                              # Smoke test + benchmark configs (fast, small)
+│
+├── trash/                                  # Retired files (project rule: no rm)
+│   ├── ANALYSYS.md                         # Archive: v7→v8 throughput investigation log
+│   └── FP8_CHECK.md                        # Archive: closed fp8 implementation audit
 │
 ├── deepspeed_configs/                      # DeepSpeed ZeRO configs
 │   └── ds_z1_config.json
@@ -184,29 +195,31 @@ devel/ruadapt/
 │   ├── test_model_reinit.py                # Model reinit test utility
 │   └── test_train_tokenization.py          # Train tokenization test utility
 │
-    ├── tests/                                  # Test suite (174 tests total)
+    ├── tests/                                  # Test suite (140 tests: 28 tokenization, 102 training, 10 utils)
     │   ├── conftest.py                         # Shared fixtures (small tokenizer, sample texts)
     │   ├── tokenization/
-    │   │   ├── test_core.py                    # BPE learning, vocab injection
-    │   │   ├── test_replace.py                 # Embedding reinit
-    │   │   ├── test_merges.py                  # tiktoken merge learning
-    │   │   ├── test_utils.py                   # Token conversion, properties
-    │   │   ├── test_bpe_tree.py                # BPE merge tree
-    │   │   └── test_convert.py                 # Format converters
-    │   ├── initialization/
-    │   │   └── test_initialization.py          # FastMetrics, LayerAttentionHead, BPE tree, utils (56 tests)
+    │   │   ├── test_bpe_tree.py                # BPE merge tree (11)
+    │   │   ├── test_convert.py                 # Format converters (12)
+    │   │   └── test_utils.py                   # Token conversion, properties (5)
+    │   ├── initialization/                     # EMPTY — tests referenced in old docs are missing (open item)
+    │   ├── perf/
+    │   │   ├── bench_qwen35.py                 # Synthetic 27B benchmark (not part of pytest)
+    │   │   └── bench_ckpt_balance.py           # Grad-ckpt × batch balance (not part of pytest)
     │   ├── training/
     │   │   ├── conftest.py                     # Training fixtures
-    │   │   ├── test_config.py                  # Config parsing
-    │   │   ├── test_utils.py                   # Dataset utilities
-    │   │   ├── test_bpe_tree.py                # BPE tree (import from tokenization)
-    │   │   ├── test_collators.py               # Collators
-    │   │   ├── test_unified_dataset.py         # Packed dataset
-    │   │   ├── test_factory.py                 # Factory protocol
-    │   │   ├── test_stats.py                   # Statistics
-    │   │   └── test_integration.py             # End-to-end pipeline
-    │   └── ushanka/
-    │       └── test_ushanka.py                 # Projection, merge, init, end-to-end LEP (17 tests)
+    │   │   ├── test_config.py                  # Config parsing (10)
+    │   │   ├── test_utils.py                   # Dataset utilities (19)
+    │   │   ├── test_unified_dataset.py         # Packed dataset (12)
+    │   │   ├── test_factory.py                 # Factory protocol (9)
+    │   │   ├── test_collators.py               # Collators (4)
+    │   │   ├── test_stats.py                   # Statistics (7)
+    │   │   ├── test_sft_packing.py             # SFT packing: isolation, masks, determinism (12)
+    │   │   ├── test_fp8_storage.py             # fp8 dequant/patch/verify/PEFT (23, CPU)
+    │   │   ├── test_fp8_parity.py              # fp8 numerical parity (GPU, gate RUN_FP8_PARITY=1, 1)
+    │   │   └── test_integration.py             # End-to-end pipeline (5)
+    │   ├── ushanka/                            # EMPTY — tests referenced in old docs are missing (open item)
+    │   └── utils/
+    │       └── test_adapter.py                 # text_only -> multimodal adapter key fixing (10)
 │
 └── data/                                   # Sample data for tests
     ├── sample_train.jsonl
@@ -295,6 +308,9 @@ Shared utilities used across modules.
 **Key components**:
 - `io.py`: `read_jsonl()`, `write_jsonl()`, `read_json()`
 - `seed.py`: `set_random_seed()`
+- `adapter.py`: `fix_adapter_dir()` — rewrites text_only (Qwen3_5ForCausalLM) LoRA checkpoint keys to multimodal
+  (Qwen3_5ForConditionalGeneration) naming by inserting `language_model.`; CLI `python -m ruadapt.utils.adapter`,
+  optional `--verify` against the meta-device multimodal model. Used before `scripts/merge_lora.py`
 - `model_utils.py`: `load_causal_lm()` — Qwen3.5-aware model loader (consolidated, bug-free)
 
 ### `deprecated/`

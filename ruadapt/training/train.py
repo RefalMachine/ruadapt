@@ -26,7 +26,7 @@ from ruadapt.training.config.schema import (
     TrainingConfig,
     UnifiedDatasetConfig,
 )
-from ruadapt.training.core.distributed import cleanup_distributed, init_distributed, is_main_process
+from ruadapt.training.core.distributed import cleanup_distributed, init_distributed, is_main_process, main_process_first
 from ruadapt.training.core.freeze import (
     freeze_all_except,
     get_trainable_summary,
@@ -35,10 +35,12 @@ from ruadapt.training.core.freeze import (
 from ruadapt.training.core.model import apply_lora_with_tied_embeddings, load_model_and_tokenizer
 from ruadapt.training.core.trainer import (
     EvaluateFirstStepCallback,
+    LigerCheckCallback,
     SavePeftModelCallback,
     UnifiedTrainer,
     compute_wsd_steps,
 )
+from ruadapt.training.datasets.collators import PackedSFTCollator
 from ruadapt.training.datasets.factory import load_factory
 from ruadapt.training.datasets.debug import print_sample
 from ruadapt.utils.seed import set_random_seed
@@ -177,7 +179,9 @@ def main(config: str, data_prep_only: bool = False):
 
     # Enable gradient checkpointing (default for large models)
     if cfg.training.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
         model.enable_input_require_grads()
 
     # Apply freeze strategy
@@ -191,6 +195,31 @@ def main(config: str, data_prep_only: bool = False):
     # Apply LoRA
     if cfg.lora.peft:
         model = apply_lora_with_tied_embeddings(model, cfg.lora)
+
+    # FP8 storage fail-fast after PEFT: every quantized base layer must still be
+    # patched (adapters wrap them but call base_layer.forward), no fp8 param trainable.
+    if cfg.model.fp8_storage:
+        from ruadapt.training.core.fp8 import verify_fp8_storage
+
+        if not cfg.lora.peft:
+            raise ValueError("model.fp8_storage=true requires lora.peft=true (frozen fp8 base)")
+        summary = verify_fp8_storage(model)
+        print(
+            f"[fp8-storage] params GiB after PEFT: fp8_frozen={summary['fp8_frozen']:.1f}, "
+            f"bf16_frozen={summary['bf16_frozen']:.1f}, trainable={summary['trainable']:.1f}"
+        )
+        # HF Trainer rejects fp8 quantization for training (FineGrainedFP8HfQuantizer
+        # is inference-only: is_trainable=False). fp8_storage keeps the base frozen and
+        # computes through patched bf16 forwards, so mark the PEFT config as loaded to
+        # skip validate_quantization_for_training's "quantization does not support
+        # training" branch (same flag transformers itself checks).
+        model._hf_peft_config_loaded = True
+        if cfg.training.gradient_checkpointing:
+            print(
+                "[fp8-storage] WARNING: gradient_checkpointing=true with fp8_storage — "
+                "dequantization runs twice per step. The point of fp8_storage is to fit "
+                "without checkpointing (see ANALYSYS.md, section 8)."
+            )
 
     # Print trainable summary
     if is_main_process():
@@ -209,9 +238,19 @@ def main(config: str, data_prep_only: bool = False):
         ds_factory = ds_factory_cls()
         coll_factory = coll_factory_cls()
 
-        train_dataset = ds_factory.create_train(tokenizer, cfg)
-        eval_dataset = ds_factory.create_eval(tokenizer, cfg)
+        # Rank-gated dataset preparation: rank 0 builds first and populates the
+        # HF-datasets cache, other ranks wait at the barrier then read from cache.
+        # Avoids N ranks recomputing the same tokenization/packing maps in parallel.
+        def _build_datasets():
+            return ds_factory.create_train(tokenizer, cfg), ds_factory.create_eval(tokenizer, cfg)
+
+        train_dataset, eval_dataset = main_process_first(_build_datasets)
         data_collator = coll_factory.create(tokenizer, cfg)
+
+        # Packing mode: eval stays unpacked and keeps v7 dynamic-pad semantics
+        eval_collator = None
+        if getattr(cfg.sft, "packing", False) and hasattr(coll_factory, "create_eval"):
+            eval_collator = coll_factory.create_eval(tokenizer, cfg)
     else:
         raise ValueError(
             "dataset_factory and collator_factory must be specified in config. "
@@ -236,14 +275,19 @@ def main(config: str, data_prep_only: bool = False):
         callbacks.append(SavePeftModelCallback())
     if getattr(cfg.training, "eval_on_start", False):
         callbacks.append(EvaluateFirstStepCallback())
+    if cfg.training.use_liger_kernel:
+        callbacks.append(LigerCheckCallback())
 
     # Create trainer
+    print('MODEL ATTN')
+    print(model.config._attn_implementation)
     trainer = UnifiedTrainer(
         model=model,
         args=cfg.training,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset if eval_dataset is not None else None,
         data_collator=data_collator,
+        eval_collator=eval_collator,
         tokenizer=tokenizer,
         callbacks=callbacks,
     )
@@ -251,6 +295,28 @@ def main(config: str, data_prep_only: bool = False):
     # Set label_names if not auto-detected
     if not trainer.label_names:
         trainer.label_names = ["labels"]
+
+    # Packing fail-fast guards (see ANALYSYS.md, section 6.5):
+    # HF Trainer silently drops dataset columns absent from model.forward
+    # signature when remove_unused_columns=True — seq_idx/cu_seq_lens_q would
+    # vanish and GatedDeltaNet layers would silently lose document isolation.
+    if getattr(cfg.sft, "packing", False):
+        if trainer.args.remove_unused_columns:
+            raise ValueError(
+                "sft.packing requires training.remove_unused_columns=false, "
+                "otherwise HF Trainer silently drops seq_idx/cu_seq_lens_q/position_ids "
+                "columns and document isolation breaks."
+            )
+        sample_batch = next(iter(trainer.get_train_dataloader()))
+        missing = [k for k in PackedSFTCollator.REQUIRED_KEYS if k not in sample_batch]
+        if missing:
+            raise ValueError(
+                f"Packed dataloader batch is missing keys {missing}. "
+                "Document isolation would break. Check dataset factory output "
+                "and remove_unused_columns."
+            )
+        if is_main_process():
+            print(f"[packing] first batch keys OK: {sorted(sample_batch.keys())}")
 
     # Resume from checkpoint if exists
     resume_from = None
@@ -265,7 +331,35 @@ def main(config: str, data_prep_only: bool = False):
     # Train
     if is_main_process():
         print("Starting training...")
+    '''
+    from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
+    print(model.config.model_type)                        # скорее всего "qwen3_5"
+    print(model.config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN)
 
+    # 2. Пропатчен ли forward (после создания trainer)
+    print(model.forward.__qualname__, model.forward.__module__)
+
+    import torch
+
+    B, L = 2, 2048
+    for _ in range(2):
+        fake = {
+            "input_ids": torch.randint(0, 248000, (B, L), device="cuda"),
+            "attention_mask": torch.ones(B, L, dtype=torch.long, device="cuda"),
+            "labels": torch.where(
+                torch.rand(B, L, device="cuda") > 0.5,
+                torch.randint(0, 248000, (B, L), device="cuda"),
+                torch.tensor(-100, device="cuda"),
+            ),
+        }
+        out = trainer.model(**fake)
+        out.loss.backward()
+        trainer.model.zero_grad(set_to_none=True)
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    '''
+    
+    print(os.environ.get("PYTORCH_CUDA_ALLOC_CONF"))
     trainer.train(resume_from_checkpoint=resume_from)
 
     # Save final model

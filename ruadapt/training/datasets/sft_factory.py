@@ -1,23 +1,36 @@
 """SFT dataset factory: composable pipeline for chat-template SFT.
 
 Pipeline steps (each independently testable):
-    filter -> tokenize -> mask -> pack (optional, only for static padding)
+    filter -> tokenize -> mask -> pack (two variants)
+
+Pack variants:
+    - packing=True: strict document packing for training. Whole samples are
+      greedily packed into fixed-size chunks (never split). Output columns:
+      input_ids, labels, position_ids (reset per document), seq_idx (int32,
+      document id per token), cu_seq_lens_q (int32, cumulative segment
+      lengths incl. pad-tail segment). Consumed by PackedSFTCollator; the
+      model isolates documents via position_ids (flash varlen path) and
+      seq_idx/cu_seq_lens_q (GatedDeltaNet). Requires batch_size=1 (FLA
+      varlen constraint) and TrainingArguments.remove_unused_columns=false.
+      Eval split is never packed.
+    - dynamic_padding=False (legacy static path): pad each sample to fixed
+      max_length via pack_record.
 
 Based on deprecated/instruct_tuning/train_sft_fsdp.py, substantially reworked.
 
 Usage in config:
-{
-    "dataset_factory": "ruadapt.training.datasets.sft_factory.SFTDatasetFactory",
-    "collator_factory": "ruadapt.training.datasets.sft_factory.SFTCollatorFactory",
-    "sft": {
-        "max_tokens_count": 2048,
-        "only_target_loss": true,
-        "sample_rate": 1.0,
-        "mask_think_block": false,
-        "dynamic_padding": true,
-        "pad_to_multiple_of": 8
+    {
+        "dataset_factory": "ruadapt.training.datasets.sft_factory.SFTDatasetFactory",
+        "collator_factory": "ruadapt.training.datasets.sft_factory.SFTCollatorFactory",
+        "sft": {
+            "max_tokens_count": 2048,
+            "only_target_loss": true,
+            "sample_rate": 1.0,
+            "mask_think_block": false,
+            "dynamic_padding": true,
+            "pad_to_multiple_of": 8
+        }
     }
-}
 """
 
 import functools
@@ -28,7 +41,11 @@ from typing import Any, Callable, Dict, List, Optional
 from datasets import Dataset, load_dataset
 from torch.utils.data import Dataset as TorchDataset
 
-from ruadapt.training.datasets.collators import DynamicPadCollator, SimpleStackCollator
+from ruadapt.training.datasets.collators import (
+    DynamicPadCollator,
+    PackedSFTCollator,
+    SimpleStackCollator,
+)
 from ruadapt.training.datasets.in_memory import InMemoryPaddedDataset
 
 
@@ -318,6 +335,109 @@ def pack_record(
 
 
 # ---------------------------------------------------------------------------
+# Step 4b: Strict document packing (packing=True, train split only)
+# ---------------------------------------------------------------------------
+
+def pack_records(
+    batch: Dict[str, List],
+    *,
+    pack_chunk_size: int,
+    pad_token_id: int,
+    label_pad_token_id: int = -100,
+) -> Dict[str, List]:
+    """Greedily pack whole samples into fixed-size chunks (never split samples).
+
+    Batched map function (call with batched=True over the full dataset, e.g.
+    batch_size=None, num_proc=1 — packing is stateful across samples and must
+    be deterministic, so it runs as a single pure pass that HF datasets caches).
+
+    Each chunk contains k whole samples plus a pad tail. Every sample is a
+    separate document: position_ids restart from 0 at each document boundary,
+    seq_idx assigns a unique id per document (pad tail included), and
+    cu_seq_lens_q holds cumulative segment lengths (last == pack_chunk_size).
+
+    Samples longer than pack_chunk_size are dropped and counted (cannot happen
+    when pack_chunk_size >= max_tokens_count).
+
+    Returns dict with columns: input_ids, labels, position_ids, seq_idx,
+    cu_seq_lens_q. No attention_mask.
+    """
+    out_ids: List[List[int]] = []
+    out_labs: List[List[int]] = []
+    out_pos: List[List[int]] = []
+    out_sid: List[List[int]] = []
+    out_cu: List[List[int]] = []
+
+    chunk_ids: List[int] = []
+    chunk_labs: List[int] = []
+    seg_lens: List[int] = []
+    dropped_long = 0
+    total_tokens = 0
+    total_samples = 0
+
+    def flush() -> None:
+        if not chunk_ids:
+            return
+        pad_len = pack_chunk_size - len(chunk_ids)
+        pos: List[int] = []
+        sid: List[int] = []
+        cu: List[int] = [0]
+        cursor = 0
+        doc = 0
+        for dlen in seg_lens:
+            pos.extend(range(dlen))
+            sid.extend([doc] * dlen)
+            doc += 1
+            cursor += dlen
+            cu.append(cursor)
+        if pad_len > 0:
+            pos.extend(range(pad_len))
+            sid.extend([doc] * pad_len)
+            cu.append(pack_chunk_size)
+        out_ids.append(chunk_ids + [pad_token_id] * pad_len)
+        out_labs.append(chunk_labs + [label_pad_token_id] * pad_len)
+        out_pos.append(pos)
+        out_sid.append(sid)
+        out_cu.append(cu)
+
+    for ids, labs in zip(batch["input_ids"], batch["labels"]):
+        n = len(ids)
+        if n == 0:
+            continue
+        total_samples += 1
+        if n > pack_chunk_size:
+            dropped_long += 1
+            continue
+        if len(chunk_ids) + n > pack_chunk_size:
+            flush()
+            chunk_ids = []
+            chunk_labs = []
+            seg_lens = []
+        chunk_ids.extend(ids)
+        chunk_labs.extend(labs)
+        seg_lens.append(n)
+        total_tokens += n
+    flush()
+
+    n_chunks = len(out_ids)
+    if n_chunks > 0:
+        fill = total_tokens / (n_chunks * pack_chunk_size)
+        avg_docs = total_samples / n_chunks
+        print(
+            f"[packing] chunks={n_chunks} fill={fill:.4f} "
+            f"avg_samples_per_chunk={avg_docs:.1f} dropped_long={dropped_long}"
+        )
+
+    return {
+        "input_ids": out_ids,
+        "labels": out_labs,
+        "position_ids": out_pos,
+        "seq_idx": out_sid,
+        "cu_seq_lens_q": out_cu,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Factory classes
 # ---------------------------------------------------------------------------
 
@@ -377,6 +497,8 @@ class SFTDatasetFactory:
         mask_think_block = False
         dynamic_padding = True
         pad_to_multiple_of = 8
+        packing = False
+        pack_chunk_size = 4096
 
         if sft_config is not None:
             max_tokens_count = sft_config.max_tokens_count
@@ -385,6 +507,8 @@ class SFTDatasetFactory:
             mask_think_block = sft_config.mask_think_block
             dynamic_padding = sft_config.dynamic_padding
             pad_to_multiple_of = sft_config.pad_to_multiple_of
+            packing = bool(getattr(sft_config, "packing", False))
+            pack_chunk_size = getattr(sft_config, "pack_chunk_size", 4096)
         elif data_config.block_size:
             max_tokens_count = data_config.block_size
 
@@ -475,6 +599,30 @@ class SFTDatasetFactory:
         masked = masked.filter(lambda x: not x["skip"], num_proc=num_proc)
         masked = masked.remove_columns(["skip"])
 
+        # Step 4a: Strict document packing (train split only)
+        if packing and split == "train":
+            if pack_chunk_size < max_tokens_count:
+                raise ValueError(
+                    f"sft.pack_chunk_size ({pack_chunk_size}) must be >= "
+                    f"sft.max_tokens_count ({max_tokens_count}), otherwise "
+                    f"some samples cannot fit into an empty chunk and would be dropped."
+                )
+            pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+            pack_fn = functools.partial(
+                pack_records,
+                pack_chunk_size=pack_chunk_size,
+                pad_token_id=pad_token_id,
+            )
+            packed = masked.map(
+                pack_fn,
+                batched=True,
+                batch_size=None,
+                num_proc=1,
+                remove_columns=masked.column_names,
+                load_from_cache_file=True,
+            )
+            return packed
+
         # Step 4: Pack (only for static padding)
         if not dynamic_padding:
             pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
@@ -502,6 +650,8 @@ class SFTDatasetFactory:
 class SFTCollatorFactory:
     """CollatorFactory for SFT.
 
+    When packing=True (train): returns PackedSFTCollator (stacks fixed-length
+        packed chunks; eval still uses DynamicPadCollator via create_eval).
     When dynamic_padding=True: returns DynamicPadCollator (pads to max in batch).
     When dynamic_padding=False: returns SimpleStackCollator (pre-padded tensors).
     """
@@ -509,12 +659,17 @@ class SFTCollatorFactory:
     def create(self, tokenizer: Any, config: Any) -> Callable:
         sft_config = getattr(config, "sft", None)
 
+        packing = False
         dynamic_padding = True
         pad_to_multiple_of = 8
 
         if sft_config is not None:
+            packing = bool(getattr(sft_config, "packing", False))
             dynamic_padding = sft_config.dynamic_padding
             pad_to_multiple_of = sft_config.pad_to_multiple_of
+
+        if packing:
+            return PackedSFTCollator()
 
         if dynamic_padding:
             pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
@@ -524,3 +679,15 @@ class SFTCollatorFactory:
             )
         else:
             return SimpleStackCollator()
+
+    def create_eval(self, tokenizer: Any, config: Any) -> Callable:
+        """Eval collator. Eval split is never packed, so always dynamic-pad."""
+        sft_config = getattr(config, "sft", None)
+        pad_to_multiple_of = 8
+        if sft_config is not None:
+            pad_to_multiple_of = sft_config.pad_to_multiple_of
+        pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+        return DynamicPadCollator(
+            pad_token_id=pad_token_id,
+            pad_to_multiple_of=pad_to_multiple_of,
+        )

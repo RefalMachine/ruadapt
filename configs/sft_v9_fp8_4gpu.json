@@ -1,0 +1,83 @@
+{
+    "model": {
+        "model_name_or_path": "Qwen/Qwen3.5-27B-FP8",
+        "torch_dtype": "bfloat16",
+        "attn_implementation": "flash_attention_3",
+        "trust_remote_code": true,
+        "text_only": true,
+        "fp8_storage": true,
+        "fp8_compile_dequant": true
+    },
+    "data": {
+        "train_file": "/workdir/data/translation/data_copy/sft2_with_help/train_sft2_with_help.jsonl",
+        "val_file": "/workdir/data/translation/data_copy/sft2_with_help/val_sft2_with_help.jsonl",
+        "preprocessing_num_workers": 8,
+        "max_train_samples": null,
+        "max_val_samples": 100
+    },
+    "sft": {
+        "max_tokens_count": 3072,
+        "only_target_loss": true,
+        "sample_rate": 1.0,
+        "mask_think_block": false,
+        "dynamic_padding": true,
+        "pad_to_multiple_of": 64,
+        "packing": true,
+        "pack_chunk_size": 3072,
+        "im_start_token_id": 248045,
+        "im_end_token_id": 248046,
+        "think_start_token_id": 248068,
+        "think_end_token_id": 248069,
+        "assistant_role_string": "assistant"
+    },
+    "lora": {
+        "peft": true,
+        "r": 128,
+        "lora_alpha": 128,
+        "lora_dropout": 0.0,
+        "target_modules": [
+            "q_proj",
+            "v_proj",
+            "k_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj"
+        ]
+    },
+    "freeze": {
+        "strategy": "none"
+    },
+    "training": {
+        "output_dir": "/workdir/data/models/Qwen3.5-27B-FP8_with_help_r128_a128_nlh_lr3e-4_e3_bs64_packed_4gpu_v9fp8",
+        "per_device_train_batch_size": 1,
+        "per_device_eval_batch_size": 2,
+        "gradient_accumulation_steps": 8,
+        "remove_unused_columns": false,
+        "num_train_epochs": 3,
+        "learning_rate": 0.0003,
+        "lr_scheduler_type": "cosine",
+        "warmup_steps": 16,
+        "ddp_timeout": 7200,
+        "bf16": true,
+        "eval_steps": 500,
+        "save_steps": 500,
+        "logging_steps": 1,
+        "save_total_limit": 2,
+        "seed": 1337,
+        "max_grad_norm": 1.0,
+        "weight_decay": 0.05,
+        "gradient_checkpointing": false,
+        "report_to": [],
+        "dataloader_num_workers": 8,
+        "dataloader_pin_memory": true,
+        "dataloader_persistent_workers": true,
+        "dataloader_prefetch_factor": 2,
+        "optim": "adamw_torch_fused",
+        "eval_strategy": "steps",
+        "include_num_input_tokens_seen": "non_padding",
+        "use_liger_kernel": true
+    },
+    "dataset_factory": "ruadapt.training.datasets.sft_factory.SFTDatasetFactory",
+    "collator_factory": "ruadapt.training.datasets.sft_factory.SFTCollatorFactory"
+}

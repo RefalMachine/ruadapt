@@ -25,6 +25,24 @@ class ModelConfig:
         default="flash_attention_2",
         metadata={"help": "Attention impl: flash_attention_2, sdpa, eager"},
     )
+    text_only: bool = field(
+        default=False,
+        metadata={"help": "Load text-only class (e.g. Qwen3_5ForCausalLM) instead of "
+                          "the multimodal wrapper; skips unused vision tower weights"},
+    )
+    fp8_storage: bool = field(
+        default=False,
+        metadata={"help": "QLoRA-style FP8 weight storage: load an FP8-quantized checkpoint, "
+                          "keep frozen weights in fp8, dequantize to bf16 inside forward. "
+                          "Halves base-weight memory so gradient checkpointing can be disabled. "
+                          "Requires a checkpoint with quantization_config quant_method=fp8 "
+                          "(HF finegrained block-wise)"},
+    )
+    fp8_compile_dequant: bool = field(
+        default=False,
+        metadata={"help": "torch.compile the fp8 dequant op (single fused memory pass). "
+                          "Only with fp8_storage; reduces dequant overhead in forward/backward"},
+    )
 
 
 @dataclass
@@ -142,6 +160,18 @@ class SFTConfig:
     pad_to_multiple_of: int = field(
         default=8,
         metadata={"help": "Pad sequence length to nearest multiple of this value"},
+    )
+    packing: bool = field(
+        default=False,
+        metadata={"help": "Strict document packing for train split: whole samples are "
+                          "greedily packed into fixed-size chunks with per-document "
+                          "position_ids reset, seq_idx and cu_seqlens (batch_size=1). "
+                          "Eval split is never packed."},
+    )
+    pack_chunk_size: int = field(
+        default=4096,
+        metadata={"help": "Chunk length for packing. Must be >= max_tokens_count "
+                          "(longer samples would be dropped)"},
     )
     im_start_token_id: Optional[int] = field(
         default=None,

@@ -40,6 +40,23 @@ def is_main_process() -> bool:
     return dist.get_rank() == 0
 
 
+def main_process_first(fn):
+    """Run `fn` on rank 0 first, then on the other ranks after a barrier.
+
+    For dataset preparation: rank 0 computes and populates the HF-datasets
+    cache, the other ranks wait and read from cache instead of recomputing
+    the same deterministic maps in parallel. Single-process mode runs fn directly.
+    """
+    if not dist.is_initialized() or dist.get_world_size() == 1:
+        return fn()
+    if dist.get_rank() == 0:
+        result = fn()
+        dist.barrier()
+        return result
+    dist.barrier()
+    return fn()
+
+
 def wrap_model(model, config) -> object:
     """Wrap model for distributed training based on config.
 
