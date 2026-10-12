@@ -3,7 +3,7 @@
 Usage:
     python -m ruadapt.training.train --config config.json
 
-    # Pre-tokenize and cache dataset (no GPU needed):
+    # Pre-tokenize and cache dataset without loading model weights:
     python -m ruadapt.training.train --config config.json --data_prep_only
 
 Or with torchrun for multi-GPU:
@@ -14,8 +14,6 @@ import json
 import os
 from typing import Any, Dict
 
-import fire
-
 from ruadapt.training.config.schema import (
     DataConfig,
     FreezeConfig,
@@ -25,7 +23,11 @@ from ruadapt.training.config.schema import (
     SFTConfig,
     TrainingConfig,
     UnifiedDatasetConfig,
+    PackingConfig,
+    SequenceConfig,
 )
+from ruadapt.training.config.packing import resolve_packing, validate_legacy_packing_fields
+from ruadapt.training.core.packing_attention import install_packing_attention
 from ruadapt.training.core.distributed import cleanup_distributed, init_distributed, is_main_process, main_process_first
 from ruadapt.training.core.freeze import (
     freeze_all_except,
@@ -36,13 +38,13 @@ from ruadapt.training.core.model import apply_lora_with_tied_embeddings, load_mo
 from ruadapt.training.core.trainer import (
     EvaluateFirstStepCallback,
     LigerCheckCallback,
-    SavePeftModelCallback,
     UnifiedTrainer,
     compute_wsd_steps,
 )
-from ruadapt.training.datasets.collators import PackedSFTCollator
+from ruadapt.training.datasets.collators import DocumentCollator
 from ruadapt.training.datasets.factory import load_factory
 from ruadapt.training.datasets.debug import print_sample
+from ruadapt.training.core.validation import validate_training_config, validate_packing_model
 from ruadapt.utils.seed import set_random_seed
 
 
@@ -66,7 +68,7 @@ def parse_config_from_json(config_path: str) -> MainConfig:
     # Validate top-level keys
     known_keys = {
         "model", "data", "lora", "freeze", "training",
-        "unified_dataset", "sft", "dataset_factory", "collator_factory",
+        "unified_dataset", "sft", "dataset_factory", "collator_factory", "packing", "sequence",
     }
     unknown = set(raw.keys()) - known_keys
     if unknown:
@@ -75,6 +77,7 @@ def parse_config_from_json(config_path: str) -> MainConfig:
             f"Known keys: {known_keys}"
         )
 
+    validate_legacy_packing_fields(raw)
     # Parse each sub-config
     model_config = ModelConfig(**raw.get("model", {}))
     data_config = DataConfig(**raw.get("data", {}))
@@ -91,7 +94,7 @@ def parse_config_from_json(config_path: str) -> MainConfig:
 
     # SFT config (optional)
     sft_raw = raw.get("sft")
-    sft_config = SFTConfig(**sft_raw) if sft_raw else None
+    sft_config = SFTConfig(**sft_raw) if sft_raw is not None else None
 
     return MainConfig(
         model=model_config,
@@ -99,6 +102,8 @@ def parse_config_from_json(config_path: str) -> MainConfig:
         lora=lora_config,
         freeze=freeze_config,
         training=training_config,
+        packing=PackingConfig(**raw["packing"]) if raw.get("packing") is not None else None,
+        sequence=SequenceConfig(**raw["sequence"]) if raw.get("sequence") is not None else None,
         unified_dataset=ud_config,
         sft=sft_config,
         dataset_factory=raw.get("dataset_factory"),
@@ -115,7 +120,7 @@ def _parse_training_config(raw: Dict[str, Any]) -> TrainingConfig:
     return config
 
 
-def _data_prep_only(cfg: MainConfig):
+def _data_prep_only(cfg: MainConfig, prepared_dataset_dir=None):
     """Tokenize and cache dataset without loading full model."""
     from transformers import AutoTokenizer
     
@@ -136,12 +141,18 @@ def _data_prep_only(cfg: MainConfig):
 
     if is_main_process():
         print("\n--- Train dataset ---")
-    train_ds = ds_factory.create_train(tokenizer, cfg)
+    train_dataset = ds_factory.create_train(tokenizer, cfg)
 
+    eval_dataset = None
     if cfg.data.val_file:
         if is_main_process():
             print("\n--- Eval dataset ---")
-        ds_factory.create_eval(tokenizer, cfg)
+        eval_dataset = ds_factory.create_eval(tokenizer, cfg)
+
+    if prepared_dataset_dir:
+        from ruadapt.training.datasets.prepared import save_prepared
+        save_prepared(prepared_dataset_dir, cfg, train_dataset, eval_dataset)
+        print(f"Prepared dataset manifest: {prepared_dataset_dir}", flush=True)
 
     if is_main_process():
         print("\n" + "=" * 60)
@@ -150,7 +161,7 @@ def _data_prep_only(cfg: MainConfig):
         print("=" * 60)
 
 
-def main(config: str, data_prep_only: bool = False):
+def main(config: str, data_prep_only: bool = False, prepared_dataset_dir: str = None):
     """Main training entrypoint.
 
     Args:
@@ -158,9 +169,15 @@ def main(config: str, data_prep_only: bool = False):
         data_prep_only: If True, only tokenize and cache dataset, then exit.
             No model loading, no training. Useful for pre-populating cache
             before multi-GPU runs.
+        prepared_dataset_dir: With data_prep_only, export references to ready Arrow
+            files here. Set data.prepared_dataset_dir to load them during training.
     """
+    if prepared_dataset_dir and not data_prep_only:
+        raise ValueError("--prepared_dataset_dir is an export option for --data_prep_only")
     # Parse config
     cfg = parse_config_from_json(config)
+    validate_training_config(cfg)
+    packing_policy = resolve_packing(cfg)
 
     # Init distributed
     init_distributed()
@@ -170,12 +187,24 @@ def main(config: str, data_prep_only: bool = False):
     set_random_seed(seed)
 
     if data_prep_only:
-        _data_prep_only(cfg)
+        _data_prep_only(cfg, prepared_dataset_dir)
         cleanup_distributed()
         return
 
+    prepared_datasets = None
+    if cfg.data.prepared_dataset_dir:
+        from ruadapt.training.datasets.prepared import load_prepared
+        prepared_datasets = main_process_first(lambda: load_prepared(cfg.data.prepared_dataset_dir, cfg))
+        if is_main_process():
+            train_ready, eval_ready = prepared_datasets
+            print(f"[data] Prepared Arrow loaded: train={len(train_ready):,}, "
+                  f"eval={len(eval_ready) if eval_ready is not None else 0:,}; preprocessing skipped", flush=True)
+
     # Load model + tokenizer
     model, tokenizer, hf_config = load_model_and_tokenizer(cfg.model)
+    validate_packing_model(cfg, model)
+    if packing_policy.mode == "isolated":
+        install_packing_attention(model)
 
     # Enable gradient checkpointing (default for large models)
     if cfg.training.gradient_checkpointing:
@@ -187,14 +216,15 @@ def main(config: str, data_prep_only: bool = False):
     # Apply freeze strategy
     if cfg.freeze.strategy == "embed_only":
         freeze_all_except(model, ["embed_tokens", "lm_head"])
-        if cfg.freeze.freeze_idx is not None:
-            register_embed_freeze_hook(model, cfg.freeze.freeze_idx)
     elif cfg.freeze.strategy == "custom" and cfg.freeze.unfreeze_modules:
         freeze_all_except(model, cfg.freeze.unfreeze_modules)
 
     # Apply LoRA
     if cfg.lora.peft:
         model = apply_lora_with_tied_embeddings(model, cfg.lora)
+
+    if cfg.freeze.strategy == "embed_only" and cfg.freeze.freeze_idx is not None:
+        register_embed_freeze_hook(model, cfg.freeze.freeze_idx)
 
     # FP8 storage fail-fast after PEFT: every quantized base layer must still be
     # patched (adapters wrap them but call base_layer.forward), no fp8 param trainable.
@@ -242,6 +272,8 @@ def main(config: str, data_prep_only: bool = False):
         # HF-datasets cache, other ranks wait at the barrier then read from cache.
         # Avoids N ranks recomputing the same tokenization/packing maps in parallel.
         def _build_datasets():
+            if prepared_datasets is not None:
+                return prepared_datasets
             return ds_factory.create_train(tokenizer, cfg), ds_factory.create_eval(tokenizer, cfg)
 
         train_dataset, eval_dataset = main_process_first(_build_datasets)
@@ -249,7 +281,7 @@ def main(config: str, data_prep_only: bool = False):
 
         # Packing mode: eval stays unpacked and keeps v7 dynamic-pad semantics
         eval_collator = None
-        if getattr(cfg.sft, "packing", False) and hasattr(coll_factory, "create_eval"):
+        if hasattr(coll_factory, "create_eval"):
             eval_collator = coll_factory.create_eval(tokenizer, cfg)
     else:
         raise ValueError(
@@ -271,16 +303,12 @@ def main(config: str, data_prep_only: bool = False):
 
     # Build callbacks
     callbacks = []
-    if cfg.lora.peft:
-        callbacks.append(SavePeftModelCallback())
     if getattr(cfg.training, "eval_on_start", False):
         callbacks.append(EvaluateFirstStepCallback())
     if cfg.training.use_liger_kernel:
         callbacks.append(LigerCheckCallback())
 
     # Create trainer
-    print('MODEL ATTN')
-    print(model.config._attn_implementation)
     trainer = UnifiedTrainer(
         model=model,
         args=cfg.training,
@@ -288,7 +316,8 @@ def main(config: str, data_prep_only: bool = False):
         eval_dataset=eval_dataset if eval_dataset is not None else None,
         data_collator=data_collator,
         eval_collator=eval_collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
+        packing_policy=packing_policy,
         callbacks=callbacks,
     )
 
@@ -300,15 +329,15 @@ def main(config: str, data_prep_only: bool = False):
     # HF Trainer silently drops dataset columns absent from model.forward
     # signature when remove_unused_columns=True — seq_idx/cu_seq_lens_q would
     # vanish and GatedDeltaNet layers would silently lose document isolation.
-    if getattr(cfg.sft, "packing", False):
+    if packing_policy.mode == "isolated":
         if trainer.args.remove_unused_columns:
             raise ValueError(
-                "sft.packing requires training.remove_unused_columns=false, "
+                "Isolated packing requires training.remove_unused_columns=false, "
                 "otherwise HF Trainer silently drops seq_idx/cu_seq_lens_q/position_ids "
                 "columns and document isolation breaks."
             )
         sample_batch = next(iter(trainer.get_train_dataloader()))
-        missing = [k for k in PackedSFTCollator.REQUIRED_KEYS if k not in sample_batch]
+        missing = [k for k in DocumentCollator.REQUIRED_KEYS if k not in sample_batch]
         if missing:
             raise ValueError(
                 f"Packed dataloader batch is missing keys {missing}. "
@@ -316,7 +345,14 @@ def main(config: str, data_prep_only: bool = False):
                 "and remove_unused_columns."
             )
         if is_main_process():
-            print(f"[packing] first batch keys OK: {sorted(sample_batch.keys())}")
+            ids, labels = sample_batch["input_ids"], sample_batch["labels"]
+            print(f"[packing] logical_B={cfg.training.per_device_train_batch_size}, "
+                  f"physical_shape={tuple(ids.shape)}, T={ids.numel()}, "
+                  f"targets={labels[..., 1:].ne(-100).sum().item()}, "
+                  f"max_segment={sample_batch['max_length_q']}")
+
+    if is_main_process():
+        print(f"[packing] resolved policy: {packing_policy.to_dict()}; backend={cfg.model.attn_implementation}")
 
     # Resume from checkpoint if exists
     resume_from = None
@@ -367,6 +403,8 @@ def main(config: str, data_prep_only: bool = False):
         print(f"Training finished. Saving to {cfg.training.output_dir}...")
 
     trainer.save_model(cfg.training.output_dir)
+    if cfg.lora.peft:
+        trainer.export_final_adapter(cfg.training.output_dir)
 
     if is_main_process():
         print("=" * 60)
@@ -378,5 +416,12 @@ def main(config: str, data_prep_only: bool = False):
     cleanup_distributed()
 
 
-if __name__ == "__main__":
+def cli():
+    """Shared console and python -m entry point."""
+    import fire
+
     fire.Fire(main)
+
+
+if __name__ == "__main__":
+    cli()

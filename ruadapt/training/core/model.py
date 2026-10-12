@@ -35,7 +35,7 @@ def _rewrite_modules_to_not_convert(names, text_only: bool):
     """
     out = []
     for name in names or []:
-        if name.startswith(_TEXT_PREFIX):
+        if text_only and name.startswith(_TEXT_PREFIX):
             out.append("model." + name[len(_TEXT_PREFIX):])
         elif name.startswith(("model.visual.", "mtp.")):
             if not text_only:
@@ -227,13 +227,16 @@ def apply_lora_with_tied_embeddings(
 
     # Re-tie weights after PEFT wrapping (only if PEFT didn't handle it)
     if needs_tie_workaround:
-        embed_mod = model.base_model.model.model.embed_tokens
-        lm_head_mod = model.base_model.model.lm_head
+        embed_mod = model.get_input_embeddings()
+        lm_head_mod = model.get_output_embeddings()
         # PEFT may have auto-tied via ensure_weight_tying — only fix if needed
         embed_w = embed_mod.weight if not hasattr(embed_mod, "modules_to_save") else embed_mod.modules_to_save["default"].weight
         lm_w = lm_head_mod.modules_to_save["default"].weight if hasattr(lm_head_mod, "modules_to_save") else lm_head_mod.weight
-        if embed_w.data_ptr() != lm_w.data_ptr():
-            embed_w.data = lm_w.data
+        if embed_w is not lm_w:
+            if hasattr(embed_mod, "modules_to_save"):
+                embed_mod.modules_to_save["default"].weight = lm_w
+            else:
+                embed_mod.weight = lm_w
             if verbose:
                 print("[LoRA] Re-tied embed_tokens ↔ lm_head weights manually")
 

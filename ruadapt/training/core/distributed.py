@@ -30,7 +30,7 @@ def init_distributed() -> None:
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
 
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend="nccl", device_id=torch.device("cuda", local_rank))
 
 
 def is_main_process() -> bool:

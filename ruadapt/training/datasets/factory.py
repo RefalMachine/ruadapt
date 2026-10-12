@@ -23,6 +23,9 @@ class DatasetFactory(Protocol):
     """Protocol for task-specific dataset creation.
 
     Implement this to create datasets for your task (SFT, CPT, CLM, etc.).
+    Built-in factories declare class attribute task="cpt" or task="sft" for
+    packing resolution. Legacy custom factories without it infer the task
+    from the presence of config.sft.
     """
 
     def create_train(self, tokenizer: Any, config: Any) -> Dataset:

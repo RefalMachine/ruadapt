@@ -65,18 +65,76 @@ def register_embed_freeze_hook(model: nn.Module, freeze_idx: int) -> None:
         freeze_idx: Token IDs below this value have their gradients zeroed.
     """
 
+    if not isinstance(freeze_idx, int) or isinstance(freeze_idx, bool) or freeze_idx < 0:
+        raise ValueError("freeze_idx must be a non-negative integer")
+
     def mask_grad_hook(grad: torch.Tensor, limit: int = freeze_idx) -> torch.Tensor:
         actual_limit = min(limit, grad.shape[0])
         with torch.no_grad():
             grad[:actual_limit, :] = 0.0
         return grad
 
-    embeds = model.get_input_embeddings()
-    embeds.weight.register_hook(mask_grad_hook)
+    seen = set()
+    for module in (model.get_input_embeddings(), model.get_output_embeddings()):
+        if module is None:
+            continue
+        # ModulesToSaveWrapper.weight resolves the active adapter's Parameter.
+        weight = module.weight
+        if freeze_idx > weight.shape[0]:
+            raise ValueError(f"freeze_idx={freeze_idx} exceeds vocabulary size {weight.shape[0]}")
+        if id(weight) in seen or not weight.requires_grad or freeze_idx == 0:
+            continue
+        seen.add(id(weight))
+        old_handle = getattr(weight, "_ruadapt_freeze_handle", None)
+        if old_handle is not None:
+            old_handle.remove()
+        weight._ruadapt_freeze_idx = freeze_idx
+        weight._ruadapt_freeze_handle = weight.register_hook(mask_grad_hook)
 
-    lm_head = model.get_output_embeddings()
-    if lm_head is not None and lm_head.weight is not embeds.weight:
-        lm_head.weight.register_hook(mask_grad_hook)
+
+def frozen_parameter_limits(model: nn.Module) -> dict:
+    """Persist row-freeze boundaries so incompatible resumes fail explicitly."""
+    return {
+        name: p._ruadapt_freeze_idx
+        for name, p in model.named_parameters()
+        if getattr(p, "_ruadapt_freeze_idx", 0)
+    }
+
+
+def protect_frozen_optimizer_rows(model: nn.Module, optimizer) -> None:
+    """Prevent AdamW momentum from updating masked rows, including after resume.
+
+    Gradient hooks alone do not clear optimizer state loaded from old runs.
+    Install on the underlying optimizer before Accelerate wraps it.
+    """
+    frozen = {id(p): (p, p._ruadapt_freeze_idx) for p in model.parameters()
+              if getattr(p, "_ruadapt_freeze_idx", 0)}
+    if not frozen:
+        return
+    # Trainer may call create_optimizer again after Accelerate has wrapped it.
+    while hasattr(optimizer, "optimizer"):
+        optimizer = optimizer.optimizer
+    if not isinstance(optimizer, torch.optim.AdamW):
+        raise ValueError("Partial embedding freeze currently requires torch AdamW (including fused AdamW)")
+    if getattr(optimizer, "_ruadapt_freeze_handle", None) is not None:
+        return
+
+    def prepare_step(opt, args, kwargs):
+        with torch.no_grad():
+            for group in opt.param_groups:
+                for param in group["params"]:
+                    if id(param) not in frozen:
+                        continue
+                    if group.get("weight_decay", 0) != 0:
+                        raise ValueError("Partial embedding freeze requires embed_weight_decay=0, including on resume")
+                    limit = frozen[id(param)][1]
+                    for key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+                        value = opt.state.get(param, {}).get(key)
+                        if value is not None:
+                            value[:limit].zero_()
+
+    prepare_step(optimizer, (), {})
+    optimizer._ruadapt_freeze_handle = optimizer.register_step_pre_hook(prepare_step)
 
 
 def get_trainable_summary(model: nn.Module, freeze_idx: Optional[int] = None) -> dict:

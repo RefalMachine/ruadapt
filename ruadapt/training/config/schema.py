@@ -5,7 +5,7 @@ container; sub-configs (ModelConfig, DataConfig, etc.) can also be used independ
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from transformers import TrainingArguments
 
@@ -23,7 +23,7 @@ class ModelConfig:
     trust_remote_code: bool = False
     attn_implementation: str = field(
         default="flash_attention_2",
-        metadata={"help": "Attention impl: flash_attention_2, sdpa, eager"},
+        metadata={"help": "Attention impl: sdpa, flash_attention_2, flash_attention_3, eager"},
     )
     text_only: bool = field(
         default=False,
@@ -47,9 +47,9 @@ class ModelConfig:
 
 @dataclass
 class DataConfig:
-    train_file: str = field(metadata={"help": "Path to training data (JSONL/JSON/TXT)"})
-    val_file: Optional[str] = field(
-        default=None, metadata={"help": "Path to validation data"}
+    train_file: Union[str, List[str]] = field(metadata={"help": "Training path, glob or list (JSONL/JSON/TXT)"})
+    val_file: Optional[Union[str, List[str]]] = field(
+        default=None, metadata={"help": "Validation path, glob or list"}
     )
     max_train_samples: Optional[int] = None
     max_val_samples: Optional[int] = None
@@ -58,6 +58,10 @@ class DataConfig:
         metadata={"help": "Sequence length after tokenization (for CLM)"},
     )
     preprocessing_num_workers: int = 8
+    prepared_dataset_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Ready Arrow manifest directory; training loads it without preprocessing"},
+    )
     cache_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Directory for HF datasets Arrow cache. None = HF default (~/.cache/huggingface)"},
@@ -165,7 +169,7 @@ class SFTConfig:
         default=False,
         metadata={"help": "Strict document packing for train split: whole samples are "
                           "greedily packed into fixed-size chunks with per-document "
-                          "position_ids reset, seq_idx and cu_seqlens (batch_size=1). "
+                          "position_ids reset, seq_idx and cu_seqlens. Logical batch_size > 1 is supported. "
                           "Eval split is never packed."},
     )
     pack_chunk_size: int = field(
@@ -248,12 +252,34 @@ class UnifiedDatasetConfig:
 
 
 @dataclass
+class SequenceConfig:
+    """Token limit before packing; SFT labels are constructed before splitting."""
+
+    max_length: Optional[int] = None
+    overflow: str = "split"
+
+
+@dataclass
+class PackingConfig:
+    """Shared batching policy. Evaluation follows task semantics, not a separate mode."""
+
+    mode: Optional[str] = None  # Legacy alias: none / stream / isolated.
+    max_length: Optional[int] = None
+    loss_normalization: str = "tokens"
+    strategy: Optional[str] = None  # none / whole / dense
+    isolate: Optional[bool] = None
+    tail: Optional[str] = None  # pad / drop / keep
+
+
+@dataclass
 class MainConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
     lora: LoRAConfig = field(default_factory=LoRAConfig)
     freeze: FreezeConfig = field(default_factory=FreezeConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    packing: Optional[PackingConfig] = None
+    sequence: Optional[SequenceConfig] = None
     unified_dataset: Optional[UnifiedDatasetConfig] = field(
         default=None,
         metadata={"help": "Unified dataset config (CPT/CLM/target substitution)"},

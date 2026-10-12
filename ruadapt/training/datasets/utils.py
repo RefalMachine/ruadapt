@@ -233,13 +233,10 @@ def _tokenize_texts_to_dataset(texts, tokenizer, max_text_length=None, domain_fi
 
 
 def ensure_tokenized(raw, tokenize_fn, num_proc, overwrite_cache, is_main_process):
-    """Tokenize HF dataset with caching. Only main rank writes cache.
+    """Tokenize with Arrow caching; train.main_process_first owns rank ordering.
 
-    Flow:
-    1. Non-main ranks hit barrier FIRST (wait for cache to be written)
-    2. Main rank tokenizes, writes to HF datasets cache
-    3. Main rank hits barrier (signals cache is ready)
-    4. All ranks return tokenized dataset (from cache on non-main ranks)
+    No inner barriers: nesting barriers under main_process_first deadlocks.
+    Other ranks reuse the main rank's cache when the cache filesystem is shared.
 
     Args:
         raw: HF Dataset to tokenize.
@@ -252,26 +249,7 @@ def ensure_tokenized(raw, tokenize_fn, num_proc, overwrite_cache, is_main_proces
     Returns:
         Tokenized HF Dataset.
     """
-    import torch.distributed as dist
-
     column_names = list(raw.features)
-    distributed = dist.is_initialized()
-
-    if not is_main_process:
-        if distributed:
-            _log("Waiting at barrier for cache...", main_process_only=False)
-            dist.barrier()
-            _log("Cache ready, loading from cache...", main_process_only=False)
-        return raw.map(
-            tokenize_fn,
-            batched=True,
-            batch_size=1000,
-            num_proc=num_proc,
-            remove_columns=column_names,
-            load_from_cache_file=True,
-            desc="Tokenizing (from cache)",
-        )
-
     # Main rank: tokenize (overwrite_cache only on main)
     _log("[rank 0] Tokenizing dataset...")
     result = raw.map(
@@ -280,12 +258,8 @@ def ensure_tokenized(raw, tokenize_fn, num_proc, overwrite_cache, is_main_proces
         batch_size=1000,
         num_proc=num_proc,
         remove_columns=column_names,
-        load_from_cache_file=not overwrite_cache,
+        load_from_cache_file=not (overwrite_cache and is_main_process),
         desc="Tokenizing",
     )
-
-    if distributed:
-        _log("[rank 0] Tokenization done, signaling barrier...")
-        dist.barrier()
 
     return result

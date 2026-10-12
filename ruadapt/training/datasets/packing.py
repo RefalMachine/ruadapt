@@ -16,12 +16,12 @@ PackedDataset — thin torch Dataset wrapper over pre-packed HF Dataset.
 import json
 import os
 import random
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import torch
 from torch.utils.data import Dataset
-from ruadapt.tokenization.bpe_tree import recursive_split, recursive_split_with_labels
+from ruadapt.tokenization.bpe_tree import recursive_split_with_labels
 from ruadapt.training.datasets.utils import _load_merge_tree, _log
 
 
@@ -354,6 +354,7 @@ def _pack_and_substitute_fn(
     subtree_has_rare_set: Optional[Set[str]] = None,
     substitutable_ids: Optional[Set[int]] = None,
     random_sub_ratio: float = 0.0,
+    return_documents: bool = False,
 ) -> Dict[str, List[List[int]]]:
     """Batched map function: concatenate → substitute → pack into chunks.
 
@@ -451,6 +452,9 @@ def _pack_and_substitute_fn(
         labels = all_ids
         has_substitutions = False
 
+    if return_documents:
+        return {"input_ids": [input_ids], "labels": [labels]}
+
     # Pack into chunks
     if natural_boundaries and newline_ids:
         para_sep_ids = set()
@@ -510,6 +514,7 @@ def make_pack_fn(
     K: int = 50,
     trim_dir: Optional[str] = None,
     random_sub_ratio: float = 0.0,
+    return_documents: bool = False,
 ) -> Callable:
     """Create a batched map function for packing + substitution.
 
@@ -578,26 +583,38 @@ def make_pack_fn(
             batch_offset = idx[0] if isinstance(idx, list) else idx
             local_seed = seed + batch_offset
 
-        return _pack_and_substitute_fn(
-            examples,
-            max_length=max_length,
-            natural_boundaries=natural_boundaries,
-            fragment_ratio=fragment_ratio,
-            p_split=p_split,
-            seed=local_seed,
-            bos_id=bos_id,
-            eos_id=eos_id,
-            id_to_str=id_to_str,
-            merge_tree=merge_tree,
-            vocab_str_to_id=vocab_str_to_id,
-            safe_tokens=safe_tokens,
-            newline_ids=newline_ids,
-            substitution_method=substitution_method,
-            parent_pool_set=parent_pool_set,
-            subtree_has_rare_set=subtree_has_rare_set,
-            substitutable_ids=substitutable_ids,
-            random_sub_ratio=random_sub_ratio,
-        )
+        def transform(rows, transform_seed):
+            return _pack_and_substitute_fn(
+                rows,
+                max_length=max_length,
+                natural_boundaries=natural_boundaries,
+                fragment_ratio=fragment_ratio,
+                p_split=p_split,
+                seed=transform_seed,
+                bos_id=bos_id,
+                eos_id=eos_id,
+                id_to_str=id_to_str,
+                merge_tree=merge_tree,
+                vocab_str_to_id=vocab_str_to_id,
+                safe_tokens=safe_tokens,
+                newline_ids=newline_ids,
+                substitution_method=substitution_method,
+                parent_pool_set=parent_pool_set,
+                subtree_has_rare_set=subtree_has_rare_set,
+                substitutable_ids=substitutable_ids,
+                random_sub_ratio=random_sub_ratio,
+                return_documents=return_documents,
+            )
+
+        if not return_documents:
+            return transform(examples, local_seed)
+        out = {"input_ids": [], "labels": []}
+        indices = idx if isinstance(idx, list) else range(len(examples["input_ids"]))
+        for ids, index in zip(examples["input_ids"], indices):
+            item = transform({"input_ids": [ids]}, seed + index)
+            out["input_ids"].extend(item["input_ids"])
+            out["labels"].extend(item["labels"])
+        return out
 
     return pack_fn
 

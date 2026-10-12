@@ -47,7 +47,7 @@ def test_pack_document_boundaries():
 
 def test_pack_labels_and_pad():
     out = pack_records(_sample_batch(), pack_chunk_size=8, pad_token_id=42)
-    assert out["labels"][0] == [-100, 2, 3, 4, -100, 6, 7, -100]
+    assert out["labels"][0] == [-100, 2, 3, -100, -100, 6, 7, -100]
     assert out["input_ids"][0][-1] == 42
     # original label masking inside samples is preserved
     assert out["labels"][1][2] == -100
@@ -168,12 +168,18 @@ def test_trainer_loss_kwargs_semantics(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_packed_isolation_hidden_states_and_lora_grads():
+@pytest.mark.parametrize("backend", ["flash_attention_2", "flash_attention_3"])
+def test_packed_isolation_hidden_states_and_lora_grads(backend):
     from peft import LoraConfig, get_peft_model
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 
+    if backend == "flash_attention_3" and torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("FlashAttention 3 requires Hopper or newer")
+
     torch.manual_seed(0)
-    model = Qwen3_5ForCausalLM(_tiny_text_config()).to("cuda", torch.bfloat16)
+    config = _tiny_text_config()
+    config._attn_implementation = backend
+    model = Qwen3_5ForCausalLM(config).to("cuda", torch.bfloat16)
     model = get_peft_model(
         model, LoraConfig(r=4, lora_alpha=4, lora_dropout=0.0, target_modules=["q_proj", "v_proj"])
     )
@@ -240,6 +246,17 @@ def test_packed_isolation_hidden_states_and_lora_grads():
         denom = gd.norm().item() + 1e-12
         max_rel = max(max_rel, ((gp - gd).norm() / denom).item())
     assert max_rel < 5e-2, f"packed LoRA grads differ from per-document: rel={max_rel}"
+
+    # Perturb only the first document; all subsequent real documents are isolated.
+    with torch.no_grad():
+        changed = dict(inputs)
+        changed["input_ids"] = inputs["input_ids"].clone()
+        changed["input_ids"][:, :doc_len] = (changed["input_ids"][:, :doc_len] + 1) % 900
+        out_changed = model(output_hidden_states=True, use_cache=False, **changed)
+        torch.testing.assert_close(
+            out_changed.hidden_states[-1][:, doc_len:n_docs * doc_len].float(),
+            h_packed[:, doc_len:n_docs * doc_len], rtol=0, atol=0,
+        )
 
     # --- negative control: without seq_idx/cu_seq_lens_q isolation is lost ---
     with torch.no_grad():

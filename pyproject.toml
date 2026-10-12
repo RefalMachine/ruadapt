@@ -30,7 +30,7 @@ dev = ["pytest", "ruff"]
 all = ["ruadapt[eval,analytics,dev]"]
 
 [project.scripts]
-ruadapt-train = "ruadapt.training.train:main"
+ruadapt-train = "ruadapt.training.train:cli"
 
 [tool.setuptools.packages.find]
 include = ["ruadapt*"]

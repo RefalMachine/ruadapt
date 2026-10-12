@@ -3,18 +3,11 @@
 Pipeline steps (each independently testable):
     filter -> tokenize -> mask -> pack (two variants)
 
-Pack variants:
-    - packing=True: strict document packing for training. Whole samples are
-      greedily packed into fixed-size chunks (never split). Output columns:
-      input_ids, labels, position_ids (reset per document), seq_idx (int32,
-      document id per token), cu_seq_lens_q (int32, cumulative segment
-      lengths incl. pad-tail segment). Consumed by PackedSFTCollator; the
-      model isolates documents via position_ids (flash varlen path) and
-      seq_idx/cu_seq_lens_q (GatedDeltaNet). Requires batch_size=1 (FLA
-      varlen constraint) and TrainingArguments.remove_unused_columns=false.
-      Eval split is never packed.
-    - dynamic_padding=False (legacy static path): pad each sample to fixed
-      max_length via pack_record.
+Packing is shared with CPT through document_packing.py and DocumentCollator.
+Isolated training stores canonical segment_lengths; the collator derives all
+backend metadata and flattens multiple logical packs to physical batch one.
+Eval always keeps dialogs independent and unpacked. Without packing, dynamic
+padding or the legacy fixed-length pack_record path is used.
 
 Based on deprecated/instruct_tuning/train_sft_fsdp.py, substantially reworked.
 
@@ -38,7 +31,6 @@ import multiprocessing as mp
 import random
 from typing import Any, Callable, Dict, List, Optional
 
-from datasets import Dataset, load_dataset
 from torch.utils.data import Dataset as TorchDataset
 
 from ruadapt.training.datasets.collators import (
@@ -47,6 +39,10 @@ from ruadapt.training.datasets.collators import (
     SimpleStackCollator,
 )
 from ruadapt.training.datasets.in_memory import InMemoryPaddedDataset
+from ruadapt.training.config.packing import resolve_packing
+from ruadapt.training.datasets.document_packing import pack_dataset, iter_packs
+from ruadapt.training.datasets.files import load_raw_dataset
+from ruadapt.training.datasets.collators import DocumentCollator, get_pad_token_id
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +93,7 @@ def filter_record(
 
     # Rough length heuristic: estimate ~3 chars per token
     total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-    if total_chars > max_tokens_count * 4:
+    if max_tokens_count is not None and total_chars > max_tokens_count * 4:
         return False
 
     return True
@@ -137,7 +133,7 @@ def tokenize_record(
         else:
             input_ids = result
 
-        if not input_ids or len(input_ids) > max_tokens_count:
+        if not input_ids or (max_tokens_count is not None and len(input_ids) > max_tokens_count):
             return skip
 
         return {"input_ids": input_ids, "skip": False}
@@ -219,7 +215,7 @@ def mask_record(
                 )
 
     # Check that there are some non-masked labels
-    if all(l == labels_pad_token_id for l in labels):
+    if all(label == labels_pad_token_id for label in labels):
         return {"input_ids": [], "labels": [], "attention_mask": [], "skip": True}
 
     return {"input_ids": input_ids, "labels": labels, "attention_mask": [1] * len(input_ids), "skip": False}
@@ -309,7 +305,7 @@ def pack_record(
     labels = labels[:max_length]
 
     # Check for useful tokens
-    if all(l == label_pad_token_id for l in labels):
+    if all(label == label_pad_token_id for label in labels):
         return {"input_ids": [], "labels": [], "attention_mask": [], "skip": True}
 
     # Pad to target length
@@ -356,85 +352,24 @@ def pack_records(
     seq_idx assigns a unique id per document (pad tail included), and
     cu_seq_lens_q holds cumulative segment lengths (last == pack_chunk_size).
 
-    Samples longer than pack_chunk_size are dropped and counted (cannot happen
+    Samples longer than pack_chunk_size are dropped by this legacy adapter (cannot happen
     when pack_chunk_size >= max_tokens_count).
 
     Returns dict with columns: input_ids, labels, position_ids, seq_idx,
     cu_seq_lens_q. No attention_mask.
     """
-    out_ids: List[List[int]] = []
-    out_labs: List[List[int]] = []
-    out_pos: List[List[int]] = []
-    out_sid: List[List[int]] = []
-    out_cu: List[List[int]] = []
-
-    chunk_ids: List[int] = []
-    chunk_labs: List[int] = []
-    seg_lens: List[int] = []
-    dropped_long = 0
-    total_tokens = 0
-    total_samples = 0
-
-    def flush() -> None:
-        if not chunk_ids:
-            return
-        pad_len = pack_chunk_size - len(chunk_ids)
-        pos: List[int] = []
-        sid: List[int] = []
-        cu: List[int] = [0]
-        cursor = 0
-        doc = 0
-        for dlen in seg_lens:
-            pos.extend(range(dlen))
-            sid.extend([doc] * dlen)
-            doc += 1
-            cursor += dlen
-            cu.append(cursor)
-        if pad_len > 0:
-            pos.extend(range(pad_len))
-            sid.extend([doc] * pad_len)
-            cu.append(pack_chunk_size)
-        out_ids.append(chunk_ids + [pad_token_id] * pad_len)
-        out_labs.append(chunk_labs + [label_pad_token_id] * pad_len)
-        out_pos.append(pos)
-        out_sid.append(sid)
-        out_cu.append(cu)
-
-    for ids, labs in zip(batch["input_ids"], batch["labels"]):
-        n = len(ids)
-        if n == 0:
-            continue
-        total_samples += 1
-        if n > pack_chunk_size:
-            dropped_long += 1
-            continue
-        if len(chunk_ids) + n > pack_chunk_size:
-            flush()
-            chunk_ids = []
-            chunk_labs = []
-            seg_lens = []
-        chunk_ids.extend(ids)
-        chunk_labs.extend(labs)
-        seg_lens.append(n)
-        total_tokens += n
-    flush()
-
-    n_chunks = len(out_ids)
-    if n_chunks > 0:
-        fill = total_tokens / (n_chunks * pack_chunk_size)
-        avg_docs = total_samples / n_chunks
-        print(
-            f"[packing] chunks={n_chunks} fill={fill:.4f} "
-            f"avg_samples_per_chunk={avg_docs:.1f} dropped_long={dropped_long}"
-        )
-
-    return {
-        "input_ids": out_ids,
-        "labels": out_labs,
-        "position_ids": out_pos,
-        "seq_idx": out_sid,
-        "cu_seq_lens_q": out_cu,
-    }
+    # Compatibility API; the actual packing algorithm is shared with CPT.
+    records = ({"input_ids": ids, "labels": labels} for ids, labels in zip(batch["input_ids"], batch["labels"]))
+    records = (r for r in records if len(r["input_ids"]) <= pack_chunk_size)
+    from ruadapt.training.config.packing import PackingPolicy
+    collator = DocumentCollator(PackingPolicy("sft", "isolated", pack_chunk_size, "legacy"), pad_token_id)
+    result = {k: [] for k in PackedSFTCollator.REQUIRED_KEYS}
+    for pack in iter_packs(records, mode="isolated", max_length=pack_chunk_size):
+        tensors = collator([pack])
+        for key in result:
+            value = tensors[key]
+            result[key].append(value.reshape(-1).tolist())
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +412,8 @@ class SFTDatasetFactory:
     When dynamic_padding=False: adds pack step and returns InMemoryPaddedDataset.
     """
 
+    task = "sft"
+
     def create_train(self, tokenizer: Any, config: Any) -> TorchDataset:
         return self._create_dataset(tokenizer, config, split="train")
 
@@ -497,8 +434,6 @@ class SFTDatasetFactory:
         mask_think_block = False
         dynamic_padding = True
         pad_to_multiple_of = 8
-        packing = False
-        pack_chunk_size = 4096
 
         if sft_config is not None:
             max_tokens_count = sft_config.max_tokens_count
@@ -507,27 +442,25 @@ class SFTDatasetFactory:
             mask_think_block = sft_config.mask_think_block
             dynamic_padding = sft_config.dynamic_padding
             pad_to_multiple_of = sft_config.pad_to_multiple_of
-            packing = bool(getattr(sft_config, "packing", False))
-            pack_chunk_size = getattr(sft_config, "pack_chunk_size", 4096)
         elif data_config.block_size:
             max_tokens_count = data_config.block_size
 
         # Resolve token IDs for boundary detection
         if sft_config is not None:
-            im_start_id = _resolve_token_id(tokenizer, sft_config.im_start_token_id, chr(60) + chr(33) + "im_start" + chr(62))
-            im_end_id = _resolve_token_id(tokenizer, sft_config.im_end_token_id, chr(60) + chr(33) + "im_end" + chr(62))
+            im_start_id = _resolve_token_id(tokenizer, sft_config.im_start_token_id, "<|im_start|>")
+            im_end_id = _resolve_token_id(tokenizer, sft_config.im_end_token_id, "<|im_end|>")
 
             # Newline token — always obtainable from tokenizer
             newline_ids = tokenizer.encode("\n", add_special_tokens=False)
-            if not newline_ids:
-                raise ValueError("Cannot encode newline character")
+            if len(newline_ids) != 1:
+                raise ValueError("SFT boundary masking requires a single-token newline")
             newline_id = newline_ids[0]
 
             # Get assistant role ID from the role string
             assistant_role_str = sft_config.assistant_role_string
             assistant_ids = tokenizer.encode(assistant_role_str, add_special_tokens=False)
-            if not assistant_ids:
-                raise ValueError(f"Cannot encode assistant role string '{assistant_role_str}'")
+            if len(assistant_ids) != 1:
+                raise ValueError(f"SFT boundary masking requires a single-token assistant role: {assistant_role_str!r}")
             assistant_role_id = assistant_ids[0]
 
             think_start_id = sft_config.think_start_token_id
@@ -539,25 +472,20 @@ class SFTDatasetFactory:
                 "At minimum, provide im_start_token_id and im_end_token_id."
             )
 
-        # Load raw data
-        data_file = data_config.train_file if split == "train" else data_config.val_file
-        raw = load_dataset("json", data_files={split: data_file}, split=split)
+        policy = resolve_packing(config, task="sft", evaluation=split != "train")
+        # Explicit sequence/strategy opts into token-based length handling AFTER masking.
+        modern = (getattr(config, "sequence", None) is not None or
+                  getattr(getattr(config, "packing", None), "strategy", None) is not None)
+        raw = load_raw_dataset(data_config, split, json_only=True)
+        if raw is None:
+            return None
 
-        # Limit samples
-        max_samples = (
-            data_config.max_train_samples if split == "train"
-            else data_config.max_val_samples
-        )
-        if max_samples is not None:
-            n = min(max_samples, len(raw))
-            raw = raw.select(range(n))
-
-        num_proc = min(mp.cpu_count(), 8)
+        num_proc = min(getattr(data_config, "preprocessing_num_workers", 8), mp.cpu_count())
 
         # Step 1: Filter
         filter_fn = functools.partial(
             filter_record,
-            max_tokens_count=max_tokens_count,
+            max_tokens_count=None if modern else max_tokens_count,
             sample_rate=sample_rate,
         )
         filtered = raw.filter(filter_fn, num_proc=num_proc)
@@ -566,7 +494,7 @@ class SFTDatasetFactory:
         tokenize_fn = functools.partial(
             tokenize_record,
             tokenizer=tokenizer,
-            max_tokens_count=max_tokens_count,
+            max_tokens_count=None if modern else max_tokens_count,
         )
         tokenized = filtered.map(
             tokenize_fn,
@@ -599,33 +527,13 @@ class SFTDatasetFactory:
         masked = masked.filter(lambda x: not x["skip"], num_proc=num_proc)
         masked = masked.remove_columns(["skip"])
 
-        # Step 4a: Strict document packing (train split only)
-        if packing and split == "train":
-            if pack_chunk_size < max_tokens_count:
-                raise ValueError(
-                    f"sft.pack_chunk_size ({pack_chunk_size}) must be >= "
-                    f"sft.max_tokens_count ({max_tokens_count}), otherwise "
-                    f"some samples cannot fit into an empty chunk and would be dropped."
-                )
-            pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
-            pack_fn = functools.partial(
-                pack_records,
-                pack_chunk_size=pack_chunk_size,
-                pad_token_id=pad_token_id,
-            )
-            packed = masked.map(
-                pack_fn,
-                batched=True,
-                batch_size=None,
-                num_proc=1,
-                remove_columns=masked.column_names,
-                load_from_cache_file=True,
-            )
-            return packed
+        if policy.mode != "none" or modern:
+            return pack_dataset(masked, policy, cache_dir=getattr(data_config, "cache_dir", None),
+                                num_proc=num_proc)
 
         # Step 4: Pack (only for static padding)
         if not dynamic_padding:
-            pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+            pad_token_id = get_pad_token_id(tokenizer)
             pack_fn = functools.partial(
                 pack_record,
                 max_length=max_tokens_count,
@@ -650,8 +558,8 @@ class SFTDatasetFactory:
 class SFTCollatorFactory:
     """CollatorFactory for SFT.
 
-    When packing=True (train): returns PackedSFTCollator (stacks fixed-length
-        packed chunks; eval still uses DynamicPadCollator via create_eval).
+    When resolved packing is isolated: returns the shared DocumentCollator.
+        Eval uses DynamicPadCollator via create_eval.
     When dynamic_padding=True: returns DynamicPadCollator (pads to max in batch).
     When dynamic_padding=False: returns SimpleStackCollator (pre-padded tensors).
     """
@@ -659,20 +567,19 @@ class SFTCollatorFactory:
     def create(self, tokenizer: Any, config: Any) -> Callable:
         sft_config = getattr(config, "sft", None)
 
-        packing = False
         dynamic_padding = True
         pad_to_multiple_of = 8
 
         if sft_config is not None:
-            packing = bool(getattr(sft_config, "packing", False))
             dynamic_padding = sft_config.dynamic_padding
             pad_to_multiple_of = sft_config.pad_to_multiple_of
 
-        if packing:
-            return PackedSFTCollator()
+        policy = resolve_packing(config, task="sft")
+        if policy.mode != "none":
+            return DocumentCollator(policy, get_pad_token_id(tokenizer))
 
         if dynamic_padding:
-            pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+            pad_token_id = get_pad_token_id(tokenizer)
             return DynamicPadCollator(
                 pad_token_id=pad_token_id,
                 pad_to_multiple_of=pad_to_multiple_of,
@@ -686,7 +593,7 @@ class SFTCollatorFactory:
         pad_to_multiple_of = 8
         if sft_config is not None:
             pad_to_multiple_of = sft_config.pad_to_multiple_of
-        pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+        pad_token_id = get_pad_token_id(tokenizer)
         return DynamicPadCollator(
             pad_token_id=pad_token_id,
             pad_to_multiple_of=pad_to_multiple_of,

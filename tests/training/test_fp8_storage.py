@@ -284,9 +284,13 @@ class TestConfigAndRewrite:
         assert not any("visual" in n or "mtp" in n for n in out)
 
     def test_rewrite_multimodal_keeps_all(self):
-        names = ["lm_head", "model.visual.blocks.0.attn.qkv", "mtp.fc"]
+        names = ["lm_head", "model.visual.blocks.0.attn.qkv", "mtp.fc",
+                 "model.language_model.layers.0.linear_attn.in_proj_a",
+                 "model.language_model.layers.0.linear_attn.conv1d"]
+        original = list(names)
         out = _rewrite_modules_to_not_convert(names, text_only=False)
-        assert set(out) == set(names)
+        assert out == original
+        assert names == original
 
     def test_build_quant_config(self):
         hf_config = SimpleNamespace(

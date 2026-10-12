@@ -10,11 +10,9 @@ MODEL_PATH = "/workdir/models/RuadaptQwen3.5-2B-Base-u128_cut64_min4_reldist_rdr
 
 
 @pytest.fixture(scope="session")
-def tokenizer():
-    """Load local tokenizer for tests (session-scoped for speed)."""
-    from transformers import AutoTokenizer
-
-    return AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+def tokenizer(local_tokenizer):
+    """Autonomous dataset tests use the synthetic BPE fixture."""
+    return local_tokenizer
 
 
 @pytest.fixture

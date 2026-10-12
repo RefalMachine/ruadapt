@@ -4,6 +4,7 @@ import json
 import os
 
 import pytest
+import torch
 
 from ruadapt.training.config.schema import (
     DataConfig,
@@ -15,6 +16,17 @@ from ruadapt.training.config.schema import (
     UnifiedDatasetConfig,
 )
 from ruadapt.training.train import parse_config_from_json
+
+
+def parse_example_on_available_device(path, tmp_path):
+    """Validate example schemas without requiring their production GPUs."""
+    with open(path) as f:
+        raw = json.load(f)
+    if not torch.cuda.is_available():
+        raw["training"]["use_cpu"] = True
+    local_path = tmp_path / "example.json"
+    local_path.write_text(json.dumps(raw))
+    return parse_config_from_json(str(local_path))
 
 
 class TestMainConfig:
@@ -54,16 +66,16 @@ class TestMainConfig:
         assert ud.fragment_ratio == 0.0
         assert ud.p_split == 0.3
 
-    def test_config_from_example_jsons(self):
+    def test_config_from_example_jsons(self, tmp_path):
         """All configs/*.json parse without error."""
         configs_dir = os.path.join(os.path.dirname(__file__), "..", "..", "configs")
         for name in os.listdir(configs_dir):
             if name.endswith(".json"):
                 path = os.path.join(configs_dir, name)
-                cfg = parse_config_from_json(path)
+                cfg = parse_example_on_available_device(path, tmp_path)
                 assert isinstance(cfg, MainConfig), f"Failed for {name}"
 
-    def test_smoke_configs_parse(self):
+    def test_smoke_configs_parse(self, tmp_path):
         """All configs/smoke/*.json parse without error."""
         smoke_dir = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "smoke")
         if not os.path.isdir(smoke_dir):
@@ -71,7 +83,7 @@ class TestMainConfig:
         for name in os.listdir(smoke_dir):
             if name.endswith(".json"):
                 path = os.path.join(smoke_dir, name)
-                cfg = parse_config_from_json(path)
+                cfg = parse_example_on_available_device(path, tmp_path)
                 assert isinstance(cfg, MainConfig), f"Failed for {name}"
 
     def test_lora_config_defaults(self):

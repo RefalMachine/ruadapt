@@ -87,7 +87,7 @@ class DynamicPadCollator:
         for i, f in enumerate(features):
             ids = f["input_ids"]
             labs = f["labels"]
-            attn = f["attention_mask"]
+            attn = f.get("attention_mask", [1] * len(ids))
 
             # Handle both list and tensor
             if isinstance(ids, torch.Tensor):
@@ -144,4 +144,74 @@ class PackedSFTCollator:
             else:
                 v = v.reshape(1, -1)
             batch[key] = v
+        return batch
+
+
+def get_pad_token_id(tokenizer):
+    for name in ("pad_token_id", "eos_token_id"):
+        value = getattr(tokenizer, name, None)
+        if value is not None:
+            return value
+    return 0
+
+
+class DocumentCollator:
+    """Collate canonical packs; isolated packs are flattened for FA and FLA.
+
+    All architecture-specific tensors are derived from segment_lengths. No
+    attention mask is sent to the model's linear-attention path in isolated mode.
+    """
+
+    REQUIRED_KEYS = ("input_ids", "labels", "position_ids", "seq_idx",
+                     "cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k")
+
+    def __init__(self, policy, pad_token_id):
+        self.policy = policy
+        self.pad_token_id = pad_token_id
+
+    def __call__(self, features):
+        if not features:
+            raise ValueError("Cannot collate an empty batch")
+        if self.policy.mode != "isolated":
+            multiple = self.policy.max_length if self.policy.tail == "pad" else 1
+            return DynamicPadCollator(self.pad_token_id, pad_to_multiple_of=multiple)(features)
+        ids, labels, positions, seq_ids, offsets = [], [], [], [], [0]
+        pack_lengths = []
+        for feature in features:
+            x, y = list(feature["input_ids"]), list(feature["labels"])
+            lengths = [int(n) for n in feature["segment_lengths"]]
+            if len(x) != len(y) or sum(lengths) != len(x) or any(n <= 0 for n in lengths):
+                raise ValueError("Invalid packed segment lengths or labels")
+            if len(x) > self.policy.max_length:
+                raise ValueError("Pack exceeds packing.max_length")
+            pad = 0 if self.policy.tail == "keep" else self.policy.max_length - len(x)
+            x += [self.pad_token_id] * pad
+            y += [-100] * pad
+            if pad:
+                lengths.append(pad)
+            cursor = 0
+            for n in lengths:
+                y[cursor] = -100
+                positions.extend(range(n))
+                seq_ids.extend([len(offsets) - 1] * n)
+                offsets.append(offsets[-1] + n)
+                cursor += n
+            ids.extend(x)
+            labels.extend(y)
+            pack_lengths.append(len(x))
+        maximum = max(b - a for a, b in zip(offsets, offsets[1:]))
+        cu = torch.tensor(offsets, dtype=torch.int32)
+        batch = {
+            "input_ids": torch.tensor([ids], dtype=torch.long),
+            "labels": torch.tensor([labels], dtype=torch.long),
+            "position_ids": torch.tensor([positions], dtype=torch.long),
+            "seq_idx": torch.tensor([seq_ids], dtype=torch.int32),
+            "cu_seq_lens_q": cu,
+            "cu_seq_lens_k": cu.clone(),
+            "max_length_q": maximum,
+            "max_length_k": maximum,
+        }
+        if self.policy.tail == "keep":
+            # Trainer needs logical sample boundaries for token-weighted eval.
+            batch["_packing_lengths"] = torch.tensor(pack_lengths, dtype=torch.long)
         return batch

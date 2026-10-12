@@ -24,12 +24,15 @@ Config example:
 """
 
 import os
+import json
 from typing import Any, Callable
 
-from datasets import load_dataset
 from torch.utils.data import Dataset
 
-from ruadapt.training.datasets.collators import PackedCollatorWithMask
+from ruadapt.training.datasets.collators import PackedCollatorWithMask, DocumentCollator, get_pad_token_id
+from ruadapt.training.config.packing import resolve_packing
+from ruadapt.training.datasets.document_packing import pack_dataset, packing_stats
+from ruadapt.training.datasets.files import load_raw_dataset
 from ruadapt.training.datasets.packing import (
     PackedDataset,
     compute_newline_ids,
@@ -39,33 +42,14 @@ from ruadapt.training.datasets.utils import _get_tokenize_fn, _is_rank_zero, _lo
 
 
 def ensure_packed(tokenized, pack_fn, num_proc, overwrite_cache, is_main_process):
-    """Pack tokenized dataset via .map() with caching. Only main rank writes cache.
+    """Pack tokenized dataset via .map() with caching. Rank ordering is owned by train.main_process_first.
 
     Analogous to ensure_tokenized but for the packing + substitution step.
     Supports parallel num_proc >= 1 because the packing function uses batch index offsets
-    to ensure perfect determinism in random splits across all workers and ranks.
+    for reproducible splits. The shared path seeds each document by its index;
+    legacy packing retains its map-batch-dependent grouping.
     """
-    import torch.distributed as dist
-
     column_names = list(tokenized.features)
-    distributed = dist.is_initialized()
-
-    if not is_main_process:
-        if distributed:
-            _log("Waiting at barrier for pack cache...", main_process_only=False)
-            dist.barrier()
-            _log("Pack cache ready, loading...", main_process_only=False)
-        return tokenized.map(
-            pack_fn,
-            batched=True,
-            with_indices=True,
-            num_proc=num_proc,
-            remove_columns=column_names,
-            load_from_cache_file=True,
-            desc="Packing (from cache)",
-        )
-
-    print("1", flush=True)
     _log(f"Packing dataset with num_proc={num_proc}...")
     result = tokenized.map(
         pack_fn,
@@ -73,13 +57,9 @@ def ensure_packed(tokenized, pack_fn, num_proc, overwrite_cache, is_main_process
         with_indices=True,
         num_proc=num_proc,
         remove_columns=column_names,
-        load_from_cache_file=not overwrite_cache,
+        load_from_cache_file=not (overwrite_cache and is_main_process),
         desc="Packing",
     )
-
-    if distributed:
-        _log("[rank 0] Packing done, signaling barrier...")
-        dist.barrier()
 
     return result
 
@@ -100,6 +80,8 @@ class UnifiedDatasetFactory:
     and packing. Each step is cached independently via HF datasets cache.
     """
 
+    task = "cpt"
+
     def create_train(self, tokenizer: Any, config: Any) -> Dataset:
         return self._create_dataset(tokenizer, config, split="train")
 
@@ -108,7 +90,10 @@ class UnifiedDatasetFactory:
 
     def _create_dataset(self, tokenizer, config, split: str) -> Dataset:
         data_config = config.data
-        block_size = data_config.block_size or 512
+        policy = resolve_packing(config, task="cpt", evaluation=split != "train")
+        block_size = policy.max_length
+        shared = (getattr(config, "packing", None) is not None or
+                  getattr(config, "sequence", None) is not None or policy.mode == "isolated")
 
         # Unified dataset config (with defaults)
         unified_cfg = getattr(config, "unified_dataset", None)
@@ -145,31 +130,10 @@ class UnifiedDatasetFactory:
         if data_file is None:
             return None
 
-        extension = data_file.split(".")[-1]
-        if extension in ("jsonl", "json"):
-            extension = "json"
-
         cache_dir = getattr(data_config, "cache_dir", None)
         overwrite_cache = getattr(data_config, "overwrite_cache", False)
         num_proc = getattr(data_config, "preprocessing_num_workers", 8)
-
-        # Limit samples via split slicing (avoids loading full file)
-        max_samples = (
-            data_config.max_train_samples
-            if split == "train"
-            else data_config.max_val_samples
-        )
-        if max_samples is not None:
-            split_spec = f"{split}[:{max_samples}]"
-        else:
-            split_spec = split
-
-        raw = load_dataset(
-            extension,
-            data_files={split: data_file},
-            cache_dir=cache_dir,
-            split=split_spec,
-        )
+        raw = load_raw_dataset(data_config, split)
 
         # Filter by text length (Arrow-backed)
         max_text_length = getattr(data_config, "max_text_length", None)
@@ -194,35 +158,54 @@ class UnifiedDatasetFactory:
             is_main_process=_is_rank_zero(),
         )
 
-        # Step 2: Pack + substitute (cached, single-process for determinism)
+        # Step 2: Cached substitution; shared packing retains document boundaries.
         seed = getattr(config.training, "seed", 42)
         newline_ids = compute_newline_ids(tokenizer) if natural_boundaries else set()
 
         # K for targeted substitution: use freeze_idx-based heuristic or default
-        freeze_idx_val = getattr(config.freeze, "freeze_idx", 248044) or 248044
         K = 50  # Default threshold for rare tokens
 
-        pack_fn = make_pack_fn(
-            tokenizer=tokenizer,
-            max_length=block_size,
-            natural_boundaries=natural_boundaries,
-            fragment_ratio=fragment_ratio,
-            p_split=p_split,
-            seed=seed,
-            newline_ids=newline_ids,
-            substitution_method=substitution_method,
-            min_parent_freq_ratio=min_parent_freq_ratio,
-            K=K,
-            trim_dir=trim_dir,
-            random_sub_ratio=random_sub_ratio,
-        )
+        if shared and substitution_method == "none":
+            # Labels equal input_ids. The shared packer can use the same Arrow
+            # buffers directly, without materializing a second document dataset.
+            packed = tokenized
+        else:
+            pack_fn = make_pack_fn(
+                tokenizer=tokenizer,
+                max_length=block_size,
+                natural_boundaries=natural_boundaries,
+                fragment_ratio=fragment_ratio,
+                p_split=p_split,
+                seed=seed,
+                newline_ids=newline_ids,
+                substitution_method=substitution_method,
+                min_parent_freq_ratio=min_parent_freq_ratio,
+                K=K,
+                trim_dir=trim_dir,
+                random_sub_ratio=random_sub_ratio,
+                return_documents=shared,
+            )
 
-        print("2", flush=True)
-        packed = ensure_packed(
-            tokenized, pack_fn, num_proc=num_proc,
-            overwrite_cache=overwrite_cache,
-            is_main_process=_is_rank_zero(),
-        )
+            packed = ensure_packed(
+                tokenized, pack_fn, num_proc=num_proc,
+                overwrite_cache=overwrite_cache,
+                is_main_process=_is_rank_zero(),
+            )
+        if shared:
+            dataset = pack_dataset(packed, policy, cache_dir=cache_dir, split_long=True,
+                                   num_proc=num_proc, overwrite_cache=overwrite_cache and _is_rank_zero())
+            _log(f"[{split}] {len(tokenized):,} documents → {len(dataset):,} {policy.mode} packs; "
+                 f"max_length={block_size}, strategy={policy.strategy}, tail={policy.tail}")
+            if split == "train" and _is_rank_zero() and getattr(unified_cfg, "compute_stats", False):
+                stats = packing_stats(dataset, policy, freeze_idx=getattr(config.freeze, "freeze_idx", None))
+                stats["n_documents"] = len(tokenized)
+                stats_dir = os.path.join(config.training.output_dir, "dataset_stats")
+                os.makedirs(stats_dir, exist_ok=True)
+                with open(os.path.join(stats_dir, "stats_train.json"), "w") as f:
+                    json.dump(stats, f, indent=2)
+                _log(f"[packing stats] input_tokens={stats['input_tokens']}, "
+                     f"target_tokens={stats['target_tokens']}, fill={stats['fill']:.4f}")
+            return dataset
 
         freeze_idx = getattr(config.freeze, "freeze_idx", None)
         compute_stats = getattr(unified_cfg, "compute_stats", False) if unified_cfg else False
@@ -285,4 +268,11 @@ class UnifiedCollatorFactory:
     """
 
     def create(self, tokenizer: Any, config: Any) -> Callable:
+        policy = resolve_packing(config, task="cpt")
+        if (getattr(config, "packing", None) is not None or
+                getattr(config, "sequence", None) is not None or policy.mode == "isolated"):
+            return DocumentCollator(policy, get_pad_token_id(tokenizer))
         return PackedCollatorWithMask()
+
+    def create_eval(self, tokenizer: Any, config: Any) -> Callable:
+        return self.create(tokenizer, config)

@@ -1,28 +1,30 @@
-"""UnifiedTrainer + callbacks: FSDP save, LoRA save, eval-first-step.
+"""UnifiedTrainer: native HF checkpoints, partial freeze and eval collation.
 
 UnifiedTrainer extends HF Trainer with:
-- FSDP checkpoint save via summon_full_params
-- LoRA adapter save via SavePeftModelCallback
+- Native HF checkpoint/resume for adapters and distributed models
 - Differential weight decay (embed_weight_decay vs global weight_decay)
 - EvaluateFirstStepCallback (optional)
 - WSD scheduler support (via lr_scheduler_kwargs)
 """
 
+import json
 import os
-from typing import Any, Callable, Dict, List, Optional
+import shutil
+import warnings
+from typing import Any
 
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from transformers import Trainer, TrainerCallback, TrainerControl, TrainerState
-from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+
+from ruadapt.training.core.freeze import frozen_parameter_limits, protect_frozen_optimizer_rows
 
 
 class UnifiedTrainer(Trainer):
     """Trainer with FSDP save support and differential weight decay.
 
     Features:
-    - Correct FSDP checkpoint saving via summon_full_params
+    - Native HF/Accelerate checkpoint saving, including optimizer and RNG state
     - Differential weight decay: embeddings get embed_weight_decay,
       other trainable params get global weight_decay
     - Optional separate eval collator (eval_collator kwarg): train and eval
@@ -30,12 +32,82 @@ class UnifiedTrainer(Trainer):
     - Works with FSDP, DDP, DeepSpeed, and single GPU
     """
 
-    def __init__(self, *args, eval_collator=None, **kwargs):
+    def __init__(self, *args, eval_collator=None, packing_policy=None, **kwargs):
         # transformers >= 5.x renamed 'tokenizer' to 'processing_class'
         if "tokenizer" in kwargs and "processing_class" not in kwargs:
             kwargs["processing_class"] = kwargs.pop("tokenizer")
         super().__init__(*args, **kwargs)
         self.eval_collator = eval_collator
+        self.packing_policy = packing_policy
+        self.token_normalized_loss = packing_policy is not None and packing_policy.loss_normalization == "tokens"
+        if self.token_normalized_loss:
+            if self.label_smoother is not None or self.compute_loss_func is not None:
+                raise ValueError("Token normalization requires the model's causal-LM loss (no label smoothing/custom loss)")
+            self.model_accepts_loss_kwargs = True
+            self.args.average_tokens_across_devices = True
+
+    def _get_num_items_in_batch(self, batch_samples, device):
+        if not self.token_normalized_loss:
+            return super()._get_num_items_in_batch(batch_samples, device)
+        # HF counts unshifted labels; causal LM never predicts column zero.
+        shifted = [{**batch, "labels": batch["labels"][..., 1:]} for batch in batch_samples]
+        count = super()._get_num_items_in_batch(shifted, device)
+        return count.clamp_min(1) if torch.is_tensor(count) else max(count or 0, 1)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if "_packing_lengths" in inputs:
+            inputs = {k: v for k, v in inputs.items() if k != "_packing_lengths"}
+        if self.token_normalized_loss and num_items_in_batch is None:
+            # Evaluation/direct calls: no accumulation-window denominator. Do
+            # not ask super() to apply the training world-size compensation.
+            inputs = {**inputs, "num_items_in_batch": inputs["labels"][..., 1:].ne(-100).sum().clamp_min(1)}
+        return super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        pack_lengths = inputs.get("_packing_lengths")
+        if pack_lengths is not None:
+            inputs = {k: v for k, v in inputs.items() if k != "_packing_lengths"}
+        if not self.token_normalized_loss or not hasattr(self, "_eval_token_totals"):
+            return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
+        loss, logits, labels = super().prediction_step(model, inputs, False, ignore_keys)
+        original_logits, original_labels = logits, labels
+        if labels is not None and logits is not None:
+            logits = logits[0] if isinstance(logits, tuple) else logits
+            # One item per DATASET sample for gather_for_metrics: it removes
+            # duplicated last-batch samples from Accelerate's distributed sampler.
+            if "cu_seq_lens_q" in inputs:
+                lengths = (pack_lengths.tolist() if pack_lengths is not None else
+                           [self.packing_policy.max_length] * (labels.numel() // self.packing_policy.max_length))
+                logits = logits.squeeze(0).split(lengths)
+                labels = labels.squeeze(0).split(lengths)
+            stats = []
+            for pred, target in zip(logits, labels):
+                target = target[1:]
+                total = torch.zeros((), dtype=torch.float64, device=pred.device)
+                # Bound the extra fp32 softmax workspace for large vocabularies.
+                for start in range(0, target.numel(), 128):
+                    total += torch.nn.functional.cross_entropy(
+                        pred[start:start + 128][:target[start:start + 128].numel()].float(),
+                        target[start:start + 128], reduction="sum", ignore_index=-100,
+                    ).double()
+                stats.append(torch.stack((total, target.ne(-100).sum().double())))
+            gathered = self.accelerator.gather_for_metrics(torch.stack(stats))
+            self._eval_token_totals += gathered.sum(0).cpu()
+        return (loss, None, None) if prediction_loss_only else (loss, original_logits, original_labels)
+
+    def evaluation_loop(self, *args, **kwargs):
+        if not self.token_normalized_loss:
+            return super().evaluation_loop(*args, **kwargs)
+        self._eval_token_totals = torch.zeros(2, dtype=torch.float64)
+        try:
+            output = super().evaluation_loop(*args, **kwargs)
+            total, count = self._eval_token_totals.tolist()
+            prefix = kwargs.get("metric_key_prefix", "eval")
+            output.metrics[f"{prefix}_loss"] = total / max(count, 1)
+            output.metrics[f"{prefix}_target_count"] = int(count)
+            return output
+        finally:
+            del self._eval_token_totals
 
     def get_eval_dataloader(self, eval_dataset=None):
         """Build eval dataloader, optionally with a dedicated eval collator."""
@@ -61,6 +133,7 @@ class UnifiedTrainer(Trainer):
         the embed group is empty (embed_tokens is frozen).
         """
         if self.optimizer is not None:
+            protect_frozen_optimizer_rows(self.model, self.optimizer)
             return self.optimizer
 
         # Let HF Trainer create the base optimizer first to populate self.optimizer
@@ -70,6 +143,7 @@ class UnifiedTrainer(Trainer):
         embed_wd = getattr(self.args, "embed_weight_decay", 0.0)
         if embed_wd == self.args.weight_decay:
             # No need to split — same WD for all params
+            protect_frozen_optimizer_rows(self.model, self.optimizer)
             return self.optimizer
 
         # Get trainable parameters
@@ -115,102 +189,82 @@ class UnifiedTrainer(Trainer):
             )
             self.optimizer = optimizer_cls(optimizer_groups, **optimizer_kwargs)
 
+        protect_frozen_optimizer_rows(self.model, self.optimizer)
         return self.optimizer
 
     # -- Checkpoint saving ---------------------------------------------------
 
-    def _save_checkpoint(self, model, trial):
-        """Save checkpoint with FSDP support."""
-        if self._is_fsdp():
-            self._save_fsdp_checkpoint(model, trial)
-        else:
-            super()._save_checkpoint(model, trial)
+    def _save(self, output_dir=None, state_dict=None):
+        # Trainer owns rank gating, state gathering and optimizer/RNG checkpoints.
+        super()._save(output_dir, state_dict=state_dict)
+        with open(os.path.join(output_dir or self.args.output_dir, "ruadapt_freeze.json"), "w") as f:
+            json.dump(frozen_parameter_limits(self.model), f, sort_keys=True)
+        if self.packing_policy is not None:
+            with open(os.path.join(output_dir or self.args.output_dir, "ruadapt_packing.json"), "w") as f:
+                json.dump(self.packing_policy.to_dict(), f, sort_keys=True)
 
-    def save_model(self, output_dir: str = None, _internal_call: bool = False):
-        """Save model with FSDP support."""
-        output_dir = output_dir or self.args.output_dir
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        model = model if model is not None else self.model
+        packing_file = os.path.join(resume_from_checkpoint, "ruadapt_packing.json")
+        if self.packing_policy is not None and os.path.isfile(packing_file):
+            with open(packing_file) as f:
+                if not self.packing_policy.matches_checkpoint(json.load(f)):
+                    raise ValueError("Checkpoint packing/loss policy differs; resume aborted")
+        elif self.packing_policy is not None:
+            warnings.warn("Legacy checkpoint has no packing/loss metadata; verify data and normalization before resume")
+        freeze_file = os.path.join(resume_from_checkpoint, "ruadapt_freeze.json")
+        if os.path.isfile(freeze_file):
+            with open(freeze_file) as f:
+                saved_limits = json.load(f)
+            if saved_limits != frozen_parameter_limits(model):
+                raise ValueError("Checkpoint freeze configuration differs from the current model; resume aborted")
+        elif frozen_parameter_limits(model):
+            warnings.warn("Legacy checkpoint has no freeze metadata; previously changed rows cannot be recovered")
 
-        if self._is_fsdp():
-            self._save_fsdp_model(output_dir)
-        else:
-            super().save_model(output_dir, _internal_call=_internal_call)
+        # Old RuAdapt checkpoints contain a duplicate lora_adapter directory.
+        # HF interprets it as a separately named adapter and fails to load the
+        # default adapter from the root. Prefer the canonical root for this case.
+        from peft import PeftModel
 
-    def _is_fsdp(self) -> bool:
-        """Check if model is wrapped with FSDP."""
-        return isinstance(self.model, FSDP) or (
-            hasattr(self.model, "module") and isinstance(self.model.module, FSDP)
+        root_adapter = os.path.isfile(os.path.join(resume_from_checkpoint, "adapter_config.json")) and any(
+            os.path.isfile(os.path.join(resume_from_checkpoint, name))
+            for name in ("adapter_model.safetensors", "adapter_model.bin")
         )
-
-    def _save_fsdp_checkpoint(self, model, trial):
-        """Save FSDP checkpoint: summon full params, save on rank 0."""
-        checkpoint_folder = os.path.join(
-            self.args.output_dir,
-            f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}",
-        )
-        self._save_fsdp_model(checkpoint_folder)
-
-        if self.args.process_index == 0:
-            self.save_state()
-
-    def _save_fsdp_model(self, output_dir: str):
-        """Save FSDP model: summon full params, save on rank 0."""
-        if self.args.process_index == 0:
-            os.makedirs(output_dir, exist_ok=True)
-
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
-
-        with FSDP.summon_full_params(
-            self.model, offload_to_cpu=True, rank0_only=True, writeback=False
+        if (
+            isinstance(model, PeftModel)
+            and not self.is_fsdp_enabled
+            and not self.is_deepspeed_enabled
+            and root_adapter
+            and os.path.isdir(os.path.join(resume_from_checkpoint, "lora_adapter"))
+            and set(model.peft_config) == {"default"}
         ):
-            if self.args.process_index == 0:
-                unwrapped_model.save_pretrained(output_dir)
-                tok = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
-                if tok is not None:
-                    tok.save_pretrained(output_dir)
+            model.load_adapter(resume_from_checkpoint, "default", is_trainable=True)
+            model.set_adapter("default")
+            return
+        super()._load_from_checkpoint(resume_from_checkpoint, model=model)
 
+    def export_final_adapter(self, output_dir=None):
+        """Copy the gathered final adapter for legacy consumers, on the writer only.
 
-class SavePeftModelCallback(TrainerCallback):
-    """Save LoRA adapter on checkpoint and training end."""
-
-    def on_save(
-        self,
-        args: Any,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ):
-        self._save_adapter(args, state, kwargs)
-        return control
-
-    def on_train_end(
-        self,
-        args: Any,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ):
-        peft_model_path = os.path.join(args.output_dir, "final_lora_adapter")
-        kwargs["model"].save_pretrained(peft_model_path)
-        tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
-        if tokenizer is not None:
-            tokenizer.save_pretrained(peft_model_path)
-        return control
-
-    def _save_adapter(self, args, state, kwargs):
-        """Save adapter at checkpoint path."""
-        if state.best_model_checkpoint is not None:
-            checkpoint_folder = state.best_model_checkpoint
-        else:
-            checkpoint_folder = os.path.join(
-                args.output_dir,
-                f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}",
-            )
-
-        peft_model_path = os.path.join(checkpoint_folder, "lora_adapter")
-        kwargs["model"].save_pretrained(peft_model_path)
-        tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
-        if tokenizer is not None:
-            tokenizer.save_pretrained(peft_model_path)
+        Call after save_model on all ranks. Never create a duplicate adapter
+        subdirectory in checkpoint-N: HF treats such directories as adapters.
+        """
+        if not self.args.should_save:
+            return
+        source = output_dir or self.args.output_dir
+        if not os.path.isfile(os.path.join(source, "adapter_config.json")):
+            return  # e.g. a sharded-only checkpoint, not an exported adapter
+        if not any(os.path.isfile(os.path.join(source, n)) for n in ("adapter_model.safetensors", "adapter_model.bin")):
+            return
+        destination = os.path.join(source, "final_lora_adapter")
+        os.makedirs(destination, exist_ok=True)
+        # Save tokenizer via its API to include custom vocabulary file formats.
+        if self.processing_class is not None:
+            self.processing_class.save_pretrained(destination)
+        for name in ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin", "README.md"):
+            path = os.path.join(source, name)
+            if os.path.isfile(path):
+                shutil.copy2(path, os.path.join(destination, name))
 
 
 class EvaluateFirstStepCallback(TrainerCallback):
