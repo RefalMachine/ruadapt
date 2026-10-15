@@ -26,12 +26,12 @@ class TestHexConversion:
 
 
 class TestGetTokenizerProperties:
-    def test_returns_dict(self):
+    def test_returns_dict(self, local_tokenizer):
         """Basic structure test (requires a real tokenizer)."""
         pytest.importorskip("transformers")
         from transformers import AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        tokenizer = local_tokenizer
         props = get_tokenizer_properties(tokenizer)
         assert isinstance(props, dict)
         assert "force_leading_space" in props
@@ -39,11 +39,11 @@ class TestGetTokenizerProperties:
 
 
 class TestGetSpecialTokenIds:
-    def test_returns_set(self):
+    def test_returns_set(self, local_tokenizer):
         pytest.importorskip("transformers")
         from transformers import AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        tokenizer = local_tokenizer
         ids = get_special_token_ids(tokenizer)
         assert isinstance(ids, set)
         assert len(ids) > 0

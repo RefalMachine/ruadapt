@@ -1,0 +1,49 @@
+{
+  "model": {
+    "model_name_or_path": "/path/to/model",
+    "torch_dtype": "bfloat16",
+    "attn_implementation": "flash_attention_2",
+    "text_only": true
+  },
+  "data": {
+    "train_file": "/path/to/sft_train.jsonl",
+    "val_file": "/path/to/sft_val.jsonl",
+    "cache_dir": "/path/to/cache",
+    "preprocessing_num_workers": 8
+  },
+  "packing": {
+    "mode": "none",
+    "max_length": 4096,
+    "loss_normalization": "tokens"
+  },
+  "lora": {
+    "peft": false
+  },
+  "freeze": {
+    "strategy": "none"
+  },
+  "training": {
+    "output_dir": "/path/to/output/sft_none",
+    "per_device_train_batch_size": 2,
+    "per_device_eval_batch_size": 2,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 2e-05,
+    "num_train_epochs": 1,
+    "bf16": true,
+    "gradient_checkpointing": true,
+    "remove_unused_columns": false,
+    "ddp_find_unused_parameters": false,
+    "eval_strategy": "steps",
+    "eval_steps": 100,
+    "save_steps": 100,
+    "save_total_limit": 2,
+    "report_to": []
+  },
+  "dataset_factory": "ruadapt.training.datasets.sft_factory.SFTDatasetFactory",
+  "collator_factory": "ruadapt.training.datasets.sft_factory.SFTCollatorFactory",
+  "sft": {
+    "max_tokens_count": 4096,
+    "only_target_loss": true,
+    "dynamic_padding": true
+  }
+}

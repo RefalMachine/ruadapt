@@ -10,3 +10,11 @@ outputs/
 wandb/
 .pytest_cache/
 .hypothesis/
+
+# Private machine/cluster settings and generated Slurm output.
+local/
+.env
+.env.*
+!.env.example
+legal-cpt-*.out
+legal-cpt-*.err

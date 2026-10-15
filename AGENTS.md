@@ -19,6 +19,12 @@ Base Model
 
 Each stage is a separate CLI entrypoint. Complex multi-step pipelines are composed via shell scripts in `scripts/`.
 
+Concrete research runs (Slurm launchers, model-specific sweeps, measurement wrappers,
+run configs and their tests) belong in the separate sibling `research` repository.
+The legal CPT suite lives in `research/experiments/legal_cpt/`; do not recreate
+copies in `scripts/`, `dev/` or `configs/benchmarks/`. Keep general training/data
+preparation code, reusable examples and library regression tests here.
+
 ### Key Paper
 
 Tikhomirov, Chernyshev. "Impact of Tokenization on LLaMa Russian Adaptation" (arXiv:2312.02598)
@@ -118,6 +124,7 @@ See [STRUCTURE.md](STRUCTURE.md) for full directory tree and file descriptions.
 7. **Factory pattern**: new dataset formats implement `DatasetFactory` + `CollatorFactory` protocols from `ruadapt/training/datasets/factory.py`
 8. **Distributed**: multi-GPU via torchrun + FSDP (default) or DDP or DeepSpeed
 9. **transformers 5.x**: use `processing_class` not `tokenizer` in Trainer
+10. **Private infrastructure stays out of Git**: never put real user logins, cluster account/project IDs, private hostnames/IP addresses, SSH connection details, credentials, or paths containing these values into versioned files. This applies to code, configs, documentation, plans, tests, logs, and copied command output. Use neutral placeholders such as `/scratch/project`, `/path/to/model`, and `user@example.org`; do not repeat real values even as examples of what is forbidden. Pass real settings through environment variables or files under the ignored `local/` directory. Before staging/committing, inspect the diff and new files for such values and sanitize generated reports/config snapshots before publishing them. `.gitignore` does not protect files already tracked by Git.
 
 ---
 
@@ -217,6 +224,7 @@ Closed: package migration (2026-06), SFT packing (v8), fp8 storage + full run
 
 ## References
 
+- [dev/FINETUNING_FIX_PLAN.md](dev/FINETUNING_FIX_PLAN.md) — Training fixes and project documentation roadmap
 - [PERF_PLAN.md](PERF_PLAN.md) — **active speed plan** + hardware/memory/fill reference facts
 - [FP8.md](FP8.md) — fp8 storage: design, implementation, merge, how to run
 - [FP8_REVIEW.md](FP8_REVIEW.md) — 2026-08-14 review: measurements behind the plan

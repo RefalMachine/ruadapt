@@ -86,6 +86,10 @@ python -m ruadapt.initialization.head.train \
 python -m ruadapt.training.train --config configs/cpt/u128_cpt.json
 ```
 
+CPT/SFT packing modes, attention backends, loss semantics and hardware limits:
+[packing and attention documentation](docs/PACKING_AND_ATTENTION.md).
+Four configurable examples are in [configs/examples](configs/examples).
+
 ### Run LEP (compose base into instruct)
 
 ```bash
@@ -107,7 +111,7 @@ python scripts/fix_config.py \
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v            # all 140 tests
+pytest tests/ -v            # full test suite
 pytest tests/ -v -m "not slow"  # skip slow integration tests
 ```
 
