@@ -1,6 +1,6 @@
 import torch
 from peft import PeftModel, PeftConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, GenerationConfig, LogitsProcessorList
+from transformers import AutoTokenizer, AutoConfig, GenerationConfig, LogitsProcessorList
 import argparse
 import time
 import json
@@ -14,6 +14,52 @@ import os
 from safetensors import safe_open
 from safetensors.torch import save_file
 import gc
+
+from ruadapt.utils.model_utils import load_causal_lm
+
+
+def set_tokenizer_metadata(model, tokenizer):
+    vocab_size = model.get_input_embeddings().weight.shape[0]
+    for key in ("eos_token_id", "bos_token_id", "pad_token_id"):
+        setattr(model.config, key, getattr(tokenizer, key))
+    model.config.vocab_size = vocab_size
+
+    text_config = getattr(model.config, "text_config", None)
+    if text_config is not None:
+        for key in ("eos_token_id", "bos_token_id", "pad_token_id"):
+            if isinstance(text_config, dict):
+                text_config[key] = getattr(tokenizer, key)
+            else:
+                setattr(text_config, key, getattr(tokenizer, key))
+        if isinstance(text_config, dict):
+            text_config["vocab_size"] = vocab_size
+        else:
+            text_config.vocab_size = vocab_size
+
+    for key in ("eos_token_id", "bos_token_id", "pad_token_id"):
+        setattr(model.generation_config, key, getattr(tokenizer, key))
+
+
+def get_input_embeddings(model):
+    embeddings = model.get_input_embeddings()
+    if embeddings is None:
+        raise AttributeError(f"Cannot find input embeddings on {type(model).__name__}")
+    return embeddings
+
+
+def get_output_embeddings(model):
+    embeddings = model.get_output_embeddings()
+    if embeddings is None:
+        raise AttributeError(f"Cannot find output embeddings on {type(model).__name__}")
+    return embeddings
+
+
+def retie_embeddings(model):
+    input_embeddings = get_input_embeddings(model)
+    output_embeddings = get_output_embeddings(model)
+    output_embeddings.weight = input_embeddings.weight
+    if hasattr(model, "tie_weights"):
+        model.tie_weights()
 
 def check_if_lora(model_dir):
     if_lora = False
@@ -31,7 +77,7 @@ def check_if_lora(model_dir):
 
 def load_model(model_path, device="cpu"):
     config = AutoConfig.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained(
+    model = load_causal_lm(
         model_path,
         torch_dtype=config.torch_dtype,
         device_map=device,
@@ -93,6 +139,8 @@ def save_split_lora(model_path, out_dir):
 
 def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_head=False, device='cuda:0'):
     config = PeftConfig.from_pretrained(model_path)
+    if config.alpha_pattern is None:
+        config.alpha_pattern = {}
     lm_head_alpha = config.alpha_pattern.get("lm_head", config.lora_alpha)
 
     config.lora_alpha /= alpha_scale
@@ -106,7 +154,7 @@ def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_he
     torch_dtype = base_model_config.torch_dtype
     base_model_path = config.base_model_name_or_path if base_model_path is None else base_model_path
     print(config)
-    model = AutoModelForCausalLM.from_pretrained(
+    model = load_causal_lm(
         base_model_path,
         torch_dtype=torch_dtype,
         device_map=device,
@@ -121,27 +169,31 @@ def load_lora(model_path, base_model_path=None, alpha_scale=1.0, not_scale_lm_he
     )
 
     if model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save: 
+        lm_head = get_output_embeddings(model.base_model.model)
         with torch.no_grad():
-            delta = model.base_model.model.lm_head.modules_to_save['default'].weight - model.base_model.model.lm_head.original_module.weight
+            delta = lm_head.modules_to_save['default'].weight - lm_head.original_module.weight
             delta /= alpha_scale
-            new_embeds = model.base_model.model.lm_head.original_module.weight + delta
+            new_embeds = lm_head.original_module.weight + delta
 
     model = model.merge_and_unload()
     model.train(False)
 
-    print(model.model.embed_tokens.weight[0])
-    print(model.lm_head.weight[0])
+    input_embeddings = get_input_embeddings(model)
+    output_embeddings = get_output_embeddings(model)
+    print(input_embeddings.weight[0])
+    print(output_embeddings.weight[0])
     print(model.config.tie_word_embeddings)
     print(config.modules_to_save)
 
     if model.config.tie_word_embeddings and config.modules_to_save is not None and 'lm_head' in config.modules_to_save:
         assert 'lm_head' not in config.modules_to_save or 'embed_tokens' not in config.modules_to_save
         with torch.no_grad():
-            model.lm_head.weight.copy_(new_embeds)
-            model.model.embed_tokens.weight = model.lm_head.weight
+            output_embeddings.weight.copy_(new_embeds)
+            input_embeddings.weight = output_embeddings.weight
+            retie_embeddings(model)
 
-    print(model.model.embed_tokens.weight[0])
-    print(model.lm_head.weight[0])
+    print(get_input_embeddings(model).weight[0])
+    print(get_output_embeddings(model).weight[0])
 
     model.train(False)
     return model
@@ -154,7 +206,7 @@ def load_donor_model(model_path, out_dir, alpha_scale=1.0, not_scale_lm_head=Fal
         model = load_lora(model_path, None, alpha_scale, not_scale_lm_head, device=device)
     else:
         config = AutoConfig.from_pretrained(model_path)
-        model = AutoModelForCausalLM.from_pretrained(
+        model = load_causal_lm(
             model_path,
             torch_dtype=config.torch_dtype,
             device_map=device,
@@ -174,6 +226,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, default="conversion")
     parser.add_argument("--output_path", type=str, default="./composed_models")
     parser.add_argument("--custom_chat_template_path", type=str, default=None)
+    parser.add_argument("--project_added_tokens_only", action="store_true", default=None)
     args = parser.parse_args()
     
     print(f'LEP MODE USHANKA {args.mode}')
@@ -202,22 +255,21 @@ if __name__ == "__main__":
     proj_modes = {"lm_head": args.mode,
               "model.embed_tokens": args.mode}
 
+    project_added_tokens_only = config_dict.get("project_added_tokens_only", False)
+    if args.project_added_tokens_only is not None:
+        project_added_tokens_only = args.project_added_tokens_only
+
     model, tokenizer = make_ushanka(
         target_model, source_model, donor_model,
         target_model_tokenizer, donor_model_tokenizer, module_projection_modes=proj_modes,
         coocurrence_map_path=None,
-        overlap_penalty=1.0)
+        overlap_penalty=1.0,
+        project_added_tokens_only=project_added_tokens_only)
     
     # Fix bad configs
     model.generation_config.do_sample = True
     
-    model.config.eos_token_id = tokenizer.eos_token_id
-    model.config.bos_token_id = tokenizer.bos_token_id
-    model.config.pad_token_id = tokenizer.pad_token_id
-    model.config.vocab_size = len(tokenizer.get_vocab())
-    model.generation_config.eos_token_id = tokenizer.eos_token_id
-    model.generation_config.bos_token_id = tokenizer.bos_token_id
-    model.generation_config.pad_token_id = tokenizer.pad_token_id
+    set_tokenizer_metadata(model, tokenizer)
     
     model.save_pretrained(out_dir)
     if args.custom_chat_template_path is not None:
@@ -233,4 +285,5 @@ if __name__ == "__main__":
 
     if adapters_path is not None:
         model = load_lora(adapters_path, out_dir, config_dict.get('alpha_scale', 1.0), config_dict.get('not_scale_lm_head', False), device='cuda:3')
+        set_tokenizer_metadata(model, tokenizer)
         model.save_pretrained(out_dir)
